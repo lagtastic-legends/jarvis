@@ -1,4 +1,4 @@
-import { MemoryItem, TaskDirective, ActionQueueItem, TelemetryData } from '../types/jarvis';
+import { MemoryItem, TaskDirective, ActionQueueItem, TelemetryData, CustomRoutine } from '../types/jarvis';
 
 // Dynamic API Base URL resolution:
 // 1. Vite environment override (VITE_API_URL)
@@ -512,6 +512,66 @@ export class JarvisApiClient {
       return await res.json();
     } catch {
       return { success: true, taskId: id, updates };
+    }
+  }
+
+  // Fetch Custom Routines & Macros
+  public async getRoutines(): Promise<CustomRoutine[]> {
+    try {
+      const res = await fetch(`${API_BASE}/api/routines`, {
+        signal: AbortSignal.timeout(4000),
+      });
+      const data = await res.json();
+      return Array.isArray(data.routines) ? data.routines : [];
+    } catch (err) {
+      console.warn('[ROUTINES] Failed to fetch routines:', err);
+      return [];
+    }
+  }
+
+  // Save or Update Custom Routine
+  public async saveRoutine(routine: Partial<CustomRoutine>): Promise<{ success: boolean; routine?: CustomRoutine; error?: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/api/routines`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(routine),
+        signal: AbortSignal.timeout(5000),
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to save routine' };
+    }
+  }
+
+  // Delete Custom Routine
+  public async deleteRoutine(id: string): Promise<{ success: boolean; error?: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/api/routines/${id}`, {
+        method: 'DELETE',
+        signal: AbortSignal.timeout(4000),
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to delete routine' };
+    }
+  }
+
+  // Execute Routine Macro Directly
+  public async executeRoutine(
+    routineId?: string,
+    voiceTrigger?: string
+  ): Promise<{ success: boolean; clientActions?: any[]; reply?: string; routineName?: string; error?: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/api/routines/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ routineId, voiceTrigger }),
+        signal: AbortSignal.timeout(8000),
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Failed to execute routine' };
     }
   }
 }

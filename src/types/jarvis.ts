@@ -14,6 +14,7 @@ export type TabId =
   | 'memory' 
   | 'vision' 
   | 'tasks' 
+  | 'routines'
   | 'research' 
   | 'coding' 
   | 'settings';
@@ -99,3 +100,32 @@ export interface UserProfile {
   voice_enabled: boolean;
   telemetry_enabled: boolean;
 }
+
+export type RoutineStepType = 
+  | 'OPEN_APP'
+  | 'OPEN_URL'
+  | 'OPEN_MULTIPLE_WINDOWS'
+  | 'SYSTEM_CONTROL'
+  | 'CREATE_TASK'
+  | 'DEVICE_SETTING';
+
+export interface RoutineStep {
+  id: string;
+  type: RoutineStepType;
+  label: string;
+  payload: Record<string, any>;
+  order: number;
+}
+
+export interface CustomRoutine {
+  id: string;
+  user_id?: string;
+  routine_name: string;
+  voice_trigger: string;
+  description: string;
+  steps: RoutineStep[];
+  is_active: boolean;
+  created_at: string;
+  updated_at?: string;
+}
+

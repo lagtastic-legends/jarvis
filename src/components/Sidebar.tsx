@@ -11,7 +11,8 @@ import {
   Settings, 
   X,
   Activity,
-  Layers
+  Layers,
+  Workflow
 } from 'lucide-react';
 import { TabId } from '../types/jarvis';
 
@@ -39,6 +40,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'memory', label: 'Vector Memory', icon: Brain },
     { id: 'vision', label: 'Optical Vision', icon: Eye },
     { id: 'tasks', label: 'Task Directives', icon: CheckSquare },
+    { id: 'routines', label: 'Routines & Macros', icon: Workflow },
     { id: 'research', label: 'Web Research', icon: Globe },
     { id: 'coding', label: 'Neural Coding', icon: Code2 },
     { id: 'settings', label: 'System Config', icon: Settings },

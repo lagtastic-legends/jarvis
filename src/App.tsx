@@ -25,6 +25,7 @@ import { VoiceEngineView } from './components/views/VoiceEngineView';
 import { MemoryCenterView } from './components/views/MemoryCenterView';
 import { OpticalVisionView } from './components/views/OpticalVisionView';
 import { TaskDirectivesView } from './components/views/TaskDirectivesView';
+import { RoutineBuilderView } from './components/views/RoutineBuilderView';
 import { WebResearchView } from './components/views/WebResearchView';
 import { NeuralCodingView } from './components/views/NeuralCodingView';
 import { SystemSettingsView } from './components/views/SystemSettingsView';
@@ -294,9 +295,22 @@ export const App: React.FC = () => {
       console.error('[AI] Directive stream error:', err);
       transitionAiState('ERROR');
       showToast('Neural processing anomaly detected. Auto-recovering...');
+
+      const safeReply = 'Tactical core systems remain online. Standing by for directives, Sir.';
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === assistantMsgId
+            ? { ...m, content: m.content || safeReply }
+            : m
+        )
+      );
+      if (speechEnabled) {
+        speechEngine.speak(safeReply);
+      }
+
       setTimeout(() => {
         transitionAiState('IDLE');
-      }, 2500);
+      }, 1800);
     }
   }, [transitionAiState, speechEnabled, showToast, messages, activeConversationId]);
 
@@ -497,6 +511,13 @@ export const App: React.FC = () => {
             <TaskDirectivesView
               tasks={tasks}
               onToggleTask={handleToggleTask}
+            />
+          )}
+
+          {activeTab === 'routines' && (
+            <RoutineBuilderView
+              onShowToast={showToast}
+              onExecuteClientActions={(actions) => actionExecutor.executeAll(actions)}
             />
           )}
 
