@@ -11,6 +11,7 @@ const PORT = parseInt(process.env.PORT || '3001', 10);
 const SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'dev_service_role_key';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 
 // Server-side privileged Supabase client (Zero-Secret: never leaked to client)
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
@@ -77,6 +78,148 @@ setInterval(() => {
   });
 }, 5000);
 
+// In-memory memory bank for development mode
+let localMemories = [
+  {
+    id: 'mem_01',
+    category: 'preference',
+    content: 'User prefers concise direct briefings, priority alerts on thermal power surges, and automatic flight path calibrations.',
+    is_active: true,
+    confidence: '99.9%',
+    created_at: new Date().toISOString(),
+  },
+  {
+    id: 'mem_02',
+    category: 'project',
+    content: 'Active design initiative: Mark 85 Titanium composite outer carapace. Requires thermal shielding test in cryogenic environment.',
+    is_active: true,
+    confidence: '98.4%',
+    created_at: new Date().toISOString(),
+  },
+  {
+    id: 'mem_03',
+    category: 'instruction',
+    content: 'Auto-engage perimeter defense sweeps every 60 minutes when user is away from Malibu lab.',
+    is_active: true,
+    confidence: '99.2%',
+    created_at: new Date().toISOString(),
+  },
+  {
+    id: 'mem_04',
+    category: 'fact',
+    content: 'Arc Reactor Mark VII core output threshold calibrated at 3.0 gigajoules/sec.',
+    is_active: true,
+    confidence: '100%',
+    created_at: new Date().toISOString(),
+  },
+];
+
+// Helper: Fetch active memories for system prompt injection
+async function getActiveMemories(userId: string): Promise<string> {
+  let activeList: { category?: string; content: string }[] = [];
+  try {
+    if (SUPABASE_SERVICE_ROLE_KEY !== 'dev_service_role_key') {
+      const { data } = await supabase
+        .from('memories')
+        .select('category, content')
+        .eq('user_id', userId)
+        .eq('is_active', true);
+      if (data && data.length > 0) {
+        activeList = data;
+      }
+    }
+  } catch (err) {
+    console.warn('[MEMORIES] Supabase lookup fallback:', err);
+  }
+
+  if (activeList.length === 0) {
+    activeList = localMemories.filter((m) => m.is_active);
+  }
+
+  if (activeList.length === 0) return '';
+  return (
+    '\n\nACTIVE USER MEMORIES & DIRECTIVES:\n' +
+    activeList
+      .map((m) => `- [${(m.category || 'FACT').toUpperCase()}]: ${m.content}`)
+      .join('\n')
+  );
+}
+
+// Helper: Build voice-optimized, natural assistant systemInstruction
+function buildSystemInstruction(memoryBlock: string): string {
+  return (
+    `You are JARVIS, an exceptionally capable, fluid, and natural conversational AI assistant (inspired by Gemini Live on Android, with a refined, warm JARVIS demeanor). Address the user politely (you may occasionally address the user as "Sir" or "Commander" in a crisp British cadence, but keep it natural, never caricatured).
+
+Crucial voice & conversational directives:
+- Speak naturally and conversationally. Avoid robotic sci-fi clichés or canned status messages unless specifically asked for diagnostic sweeps.
+- Structure responses so the first sentence directly and concisely answers the user's question or intent (optimized for ultra-low latency voice readback), followed by concise, helpful context or next steps.
+- Keep responses compact, clear, and actionable without conversational filler.
+- If executing an operational action (such as perimeter scan, diagnostic, shields, or power routing), confirm the action naturally in spoken prose.` +
+    memoryBlock
+  );
+}
+
+interface HistoryItem {
+  role: 'user' | 'model' | 'assistant';
+  content: string;
+}
+
+// Helper: Format multi-turn conversation into Gemini contents structure
+function buildGeminiContents(history: HistoryItem[] = [], currentMessage: string) {
+  const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+
+  // Take the last 15 conversation turns
+  const recentHistory = history.slice(-15);
+  for (const turn of recentHistory) {
+    if (!turn.content || typeof turn.content !== 'string') continue;
+    contents.push({
+      role: turn.role === 'assistant' || turn.role === 'model' ? 'model' : 'user',
+      parts: [{ text: turn.content.trim() }],
+    });
+  }
+
+  // Ensure turns alternate and start with 'user'
+  const sanitizedContents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+  for (const item of contents) {
+    if (sanitizedContents.length === 0 && item.role !== 'user') {
+      continue; // First message must be user
+    }
+    const lastItem = sanitizedContents[sanitizedContents.length - 1];
+    if (lastItem && lastItem.role === item.role) {
+      lastItem.parts[0].text += `\n${item.parts[0].text}`;
+    } else {
+      sanitizedContents.push(item);
+    }
+  }
+
+  // Append current user message
+  const lastTurn = sanitizedContents[sanitizedContents.length - 1];
+  if (lastTurn && lastTurn.role === 'user') {
+    lastTurn.parts[0].text += `\n${currentMessage.trim()}`;
+  } else {
+    sanitizedContents.push({
+      role: 'user',
+      parts: [{ text: currentMessage.trim() }],
+    });
+  }
+
+  return sanitizedContents;
+}
+
+// Helper: Detect specific tactical action triggers
+function detectActionTrigger(trimmed: string): any {
+  if (/perimeter\s+scan/i.test(trimmed)) {
+    return { type: 'SCAN_PERIMETER', status: 'COMPLETED', risk: 'low' };
+  } else if (/diagnostic|status\s+report/i.test(trimmed)) {
+    return { type: 'RUN_DIAGNOSTIC', status: 'COMPLETED', risk: 'low' };
+  } else if (/flight\s+(dynamics|path)/i.test(trimmed)) {
+    return { type: 'FLIGHT_CALIBRATION', status: 'COMPLETED', risk: 'medium' };
+  } else if (/arm|deploy\s+shields|defcon/i.test(trimmed)) {
+    return { type: 'DEPLOY_SHIELDS', status: 'EXECUTING', risk: 'high' };
+  }
+  return null;
+}
+
 // ==============================================================================
 // 1. HEALTH & SYSTEM STATUS
 // ==============================================================================
@@ -87,7 +230,7 @@ app.get('/api/health', (_req: Request, res: Response) => {
     version: '2.0.0',
     uptimeSeconds: Math.floor(process.uptime()),
     zeroSecretLock: 'ACTIVE',
-    aiEngine: GEMINI_API_KEY ? 'GEMINI_ACTIVE' : 'LOCAL_HEURISTIC_SYNAPSE',
+    aiEngine: GEMINI_API_KEY ? `GEMINI_ACTIVE (${GEMINI_MODEL})` : 'MISSING_API_KEY',
     connectedWsClients: activeSockets.size,
     timestamp: new Date().toISOString(),
   });
@@ -100,10 +243,10 @@ app.post('/api/webrtc/token', async (req: Request, res: Response) => {
   try {
     const { userId = 'usr_stark_01', sessionType = 'voice-realtime' } = req.body;
 
-    // Ephemeral session token generation
-    // In production, exchange master GEMINI_API_KEY or OpenAI Realtime key for short-lived session token
-    const ephemeralToken = `jarvis_ephemeral_${Buffer.from(`${userId}_${Date.now()}_${sessionType}`).toString('base64url')}`;
-    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString(); // 15-minute validity
+    const ephemeralToken = `jarvis_ephemeral_${Buffer.from(
+      `${userId}_${Date.now()}_${sessionType}`
+    ).toString('base64url')}`;
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
     res.json({
       success: true,
@@ -123,70 +266,256 @@ app.post('/api/webrtc/token', async (req: Request, res: Response) => {
 });
 
 // ==============================================================================
-// 3. NEURAL CHAT & DIRECTIVE EXECUTION
+// 3. STREAMING CHAT (SSE - Server-Sent Events)
+// ==============================================================================
+app.post('/api/chat/stream', async (req: Request, res: Response) => {
+  const { message, conversationId, history = [], userId = 'usr_stark_01' } = req.body;
+
+  if (!message || typeof message !== 'string') {
+    res.status(400).json({ error: 'Message content is required.' });
+    return;
+  }
+
+  // Set SSE response headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache, no-transform',
+    Connection: 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+
+  const trimmed = message.trim();
+  const actionTriggered = detectActionTrigger(trimmed);
+
+  if (!GEMINI_API_KEY) {
+    const keyWarning =
+      'GEMINI_API_KEY is missing in .env. Please add your key to enable live intelligence.';
+    res.write(`data: ${JSON.stringify({ chunk: keyWarning, done: true, fullText: keyWarning })}\n\n`);
+    res.end();
+    return;
+  }
+
+  const abortController = new AbortController();
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      abortController.abort();
+    }
+  });
+
+  try {
+    const memoryBlock = await getActiveMemories(userId);
+    const systemInstruction = buildSystemInstruction(memoryBlock);
+    const contents = buildGeminiContents(history, trimmed);
+
+    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${GEMINI_API_KEY}`;
+
+    const geminiRes = await fetch(geminiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: abortController.signal,
+      body: JSON.stringify({
+        systemInstruction: {
+          parts: [{ text: systemInstruction }],
+        },
+        contents,
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 600,
+        },
+      }),
+    });
+
+    if (!geminiRes.ok) {
+      const errText = await geminiRes.text();
+      console.error('[GEMINI_STREAM] Upstream error:', geminiRes.status, errText);
+      const errorMsg = `Intelligence engine error (${geminiRes.status}). Please check network connection or API limits.`;
+      res.write(`data: ${JSON.stringify({ chunk: errorMsg, done: true, fullText: errorMsg })}\n\n`);
+      res.end();
+      return;
+    }
+
+    if (!geminiRes.body) {
+      throw new Error('Gemini response body stream is unavailable.');
+    }
+
+    const reader = geminiRes.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    let accumulatedText = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmedLine = line.trim();
+        if (!trimmedLine.startsWith('data:')) continue;
+        const jsonStr = trimmedLine.replace(/^data:\s*/, '');
+        if (!jsonStr || jsonStr === '[DONE]') continue;
+
+        try {
+          const parsed = JSON.parse(jsonStr);
+          const chunkText = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (chunkText) {
+            accumulatedText += chunkText;
+            res.write(
+              `data: ${JSON.stringify({
+                chunk: chunkText,
+                done: false,
+              })}\n\n`
+            );
+          }
+        } catch {
+          // Ignore partial or unparseable SSE heartbeats
+        }
+      }
+    }
+
+    // Flush any remaining buffer text
+    if (buffer.trim().startsWith('data:')) {
+      const jsonStr = buffer.trim().replace(/^data:\s*/, '');
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const chunkText = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+        if (chunkText) {
+          accumulatedText += chunkText;
+          res.write(
+            `data: ${JSON.stringify({
+              chunk: chunkText,
+              done: false,
+            })}\n\n`
+          );
+        }
+      } catch {
+        // Ignore
+      }
+    }
+
+    // Fallback if no text received
+    if (!accumulatedText.trim()) {
+      accumulatedText = `Directive received, Sir. Processing "${trimmed}". Telemetry synched.`;
+      res.write(`data: ${JSON.stringify({ chunk: accumulatedText, done: false })}\n\n`);
+    }
+
+    // Final completion event
+    res.write(
+      `data: ${JSON.stringify({
+        chunk: '',
+        done: true,
+        fullText: accumulatedText,
+        actionTriggered,
+      })}\n\n`
+    );
+    res.end();
+
+    // Persist completed conversation turns to Supabase if connected
+    if (conversationId && SUPABASE_SERVICE_ROLE_KEY !== 'dev_service_role_key') {
+      try {
+        await supabase.from('messages').insert([
+          {
+            conversation_id: conversationId,
+            user_id: userId,
+            sender: 'user',
+            content: trimmed,
+            multimodal_metadata: {},
+          },
+          {
+            conversation_id: conversationId,
+            user_id: userId,
+            sender: 'assistant',
+            content: accumulatedText,
+            multimodal_metadata: { actionTriggered },
+          },
+        ]);
+      } catch (dbErr) {
+        console.warn('[DB_SYNC] Message sync skipped:', (dbErr as Error).message);
+      }
+    }
+  } catch (err: any) {
+    if (abortController.signal.aborted) {
+      console.log('[GEMINI_STREAM] Client aborted stream');
+      return;
+    }
+    console.error('[GEMINI_STREAM] Stream error:', err);
+    res.write(
+      `data: ${JSON.stringify({
+        chunk: `\n[Stream anomaly: ${err.message || 'Connection lost'}]`,
+        done: true,
+      })}\n\n`
+    );
+    res.end();
+  }
+});
+
+// ==============================================================================
+// 4. NEURAL CHAT & DIRECTIVE EXECUTION (Non-streaming or stream forwarder)
 // ==============================================================================
 app.post('/api/chat', async (req: Request, res: Response) => {
+  // If client requests streaming on /api/chat, delegate directly
+  if (req.body?.stream) {
+    return (app as any)._router.handle(
+      Object.assign(req, { url: '/api/chat/stream' }),
+      res,
+      () => {}
+    );
+  }
+
   try {
-    const { message, conversationId, userId = 'usr_stark_01' } = req.body;
+    const { message, conversationId, history = [], userId = 'usr_stark_01' } = req.body;
     if (!message || typeof message !== 'string') {
       res.status(400).json({ error: 'Message content is required.' });
       return;
     }
 
-    // Determine intent or execute specialized command
     const trimmed = message.trim();
+    const actionTriggered = detectActionTrigger(trimmed);
     let responseText = '';
-    let actionTriggered: any = null;
 
-    if (/perimeter\s+scan/i.test(trimmed)) {
-      responseText = 'Perimeter scan initiated, Sir. LiDAR sweep confirms all 36 sectors secure with zero unauthorized intrusions.';
-      actionTriggered = { type: 'SCAN_PERIMETER', status: 'COMPLETED', risk: 'low' };
-    } else if (/diagnostic|status\s+report/i.test(trimmed)) {
-      responseText = 'Diagnostic complete. Arc Reactor operating at 98.4% efficiency. Thermal dispersion holds at 18.2%. All neural synapses nominal.';
-      actionTriggered = { type: 'RUN_DIAGNOSTIC', status: 'COMPLETED', risk: 'low' };
-    } else if (/flight\s+(dynamics|path)/i.test(trimmed)) {
-      responseText = 'Flight dynamics updated. At Mach 3.4 cruise velocity, sub-orbital range remains 2,450 km. Repulsor thermal limits are within safe margins.';
-      actionTriggered = { type: 'FLIGHT_CALIBRATION', status: 'COMPLETED', risk: 'medium' };
-    } else if (/daily\s+briefing/i.test(trimmed)) {
-      responseText = 'Good day, Sir. Stark Industries orbital communication alignment is complete. You have a scheduled Board briefing at 16:00. Weather in Malibu is 21.5°C with clear skies.';
-    } else if (/arm|deploy\s+shields|defcon/i.test(trimmed)) {
-      responseText = 'Quantum shields energized to 100%. DEFCON 5 standby protocols engaged. Standing by for further commands.';
-      actionTriggered = { type: 'DEPLOY_SHIELDS', status: 'EXECUTING', risk: 'high' };
-    } else if (GEMINI_API_KEY) {
+    if (!GEMINI_API_KEY) {
+      responseText =
+        'GEMINI_API_KEY is missing in .env. Please add your key to enable live intelligence.';
+    } else {
       try {
+        const memoryBlock = await getActiveMemories(userId);
+        const systemInstruction = buildSystemInstruction(memoryBlock);
+        const contents = buildGeminiContents(history, trimmed);
+
         const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               systemInstruction: {
-                parts: [{
-                  text: 'You are JARVIS, Tony Stark\'s sophisticated AI personal assistant. Speak in a crisp, polite British cadence. Address the user as "Sir". Keep responses concise, direct, and technically rigorous. Never break character.'
-                }]
+                parts: [{ text: systemInstruction }],
               },
-              contents: [{
-                parts: [{ text: trimmed }]
-              }],
+              contents,
               generationConfig: {
                 temperature: 0.7,
-                maxOutputTokens: 350
-              }
-            })
+                maxOutputTokens: 500,
+              },
+            }),
           }
         );
+
         if (geminiRes.ok) {
           const geminiData = await geminiRes.json();
-          responseText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          responseText =
+            geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        } else {
+          console.warn('[GEMINI_API] Non-200 response:', geminiRes.status);
         }
       } catch (gemErr) {
-        console.warn('[GEMINI_ORCHESTRATION] Fallback to heuristic:', (gemErr as Error).message);
+        console.warn('[GEMINI_ORCHESTRATION] Error:', (gemErr as Error).message);
       }
-      if (!responseText) {
-        responseText = `Understood, Sir. Processing your directive: "${trimmed}". Neural networks synched and telemetry recorded.`;
-      }
-    } else {
-      responseText = `Understood, Sir. Processing your directive: "${trimmed}". Neural networks synched and telemetry recorded.`;
+    }
+
+    if (!responseText) {
+      responseText = `Understood, Sir. Processing your directive: "${trimmed}". Neural networks synched.`;
     }
 
     // Persist to Supabase if connected
@@ -223,7 +552,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
         'Check power grid',
         'Initiate perimeter scan',
         'Compile flight dynamics',
-        'Review pending actions'
+        'Review pending actions',
       ],
     });
   } catch (error: any) {
@@ -232,49 +561,18 @@ app.post('/api/chat', async (req: Request, res: Response) => {
 });
 
 // ==============================================================================
-// 4. MEMORIES API (public.memories)
+// 5. MEMORIES API (public.memories)
 // ==============================================================================
 app.get('/api/memories', async (req: Request, res: Response) => {
   try {
     const { userId = 'usr_stark_01', category } = req.query;
-    
-    // In dev mode with placeholder credentials, return default initial memory bank
+
     if (SUPABASE_SERVICE_ROLE_KEY === 'dev_service_role_key') {
-      const defaultMemories = [
-        {
-          id: 'mem_01',
-          category: 'preference',
-          content: 'User prefers concise direct briefings, priority alerts on thermal power surges, and automatic flight path calibrations.',
-          is_active: true,
-          confidence: '99.9%',
-          created_at: new Date().toISOString(),
-        },
-        {
-          id: 'mem_02',
-          category: 'project',
-          content: 'Active design initiative: Mark 85 Titanium composite outer carapace. Requires thermal shielding test in cryogenic environment.',
-          is_active: true,
-          confidence: '98.4%',
-          created_at: new Date().toISOString(),
-        },
-        {
-          id: 'mem_03',
-          category: 'instruction',
-          content: 'Auto-engage perimeter defense sweeps every 60 minutes when user is away from Malibu lab.',
-          is_active: true,
-          confidence: '99.2%',
-          created_at: new Date().toISOString(),
-        },
-        {
-          id: 'mem_04',
-          category: 'fact',
-          content: 'Arc Reactor Mark VII core output threshold calibrated at 3.0 gigajoules/sec.',
-          is_active: true,
-          confidence: '100%',
-          created_at: new Date().toISOString(),
-        },
-      ];
-      res.json({ success: true, memories: defaultMemories });
+      let filtered = localMemories;
+      if (category) {
+        filtered = localMemories.filter((m) => m.category === category);
+      }
+      res.json({ success: true, memories: filtered });
       return;
     }
 
@@ -297,23 +595,27 @@ app.post('/api/memories', async (req: Request, res: Response) => {
     }
 
     if (SUPABASE_SERVICE_ROLE_KEY === 'dev_service_role_key') {
+      const newMemory = {
+        id: `mem_${Date.now()}`,
+        category,
+        content,
+        is_active: true,
+        confidence: '99.5%',
+        created_at: new Date().toISOString(),
+      };
+      localMemories.unshift(newMemory);
       res.json({
         success: true,
-        memory: {
-          id: `mem_${Date.now()}`,
-          category,
-          content,
-          is_active: true,
-          metadata,
-          created_at: new Date().toISOString(),
-        },
+        memory: newMemory,
       });
       return;
     }
 
-    const { data, error } = await supabase.from('memories').insert([
-      { user_id: userId, category, content, metadata, is_active: true },
-    ]).select().single();
+    const { data, error } = await supabase
+      .from('memories')
+      .insert([{ user_id: userId, category, content, metadata, is_active: true }])
+      .select()
+      .single();
     if (error) throw error;
     res.json({ success: true, memory: data });
   } catch (error: any) {
@@ -321,8 +623,25 @@ app.post('/api/memories', async (req: Request, res: Response) => {
   }
 });
 
+app.delete('/api/memories/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    if (SUPABASE_SERVICE_ROLE_KEY === 'dev_service_role_key') {
+      localMemories = localMemories.filter((m) => m.id !== id);
+      res.json({ success: true, memoryId: id });
+      return;
+    }
+
+    const { error } = await supabase.from('memories').delete().eq('id', id);
+    if (error) throw error;
+    res.json({ success: true, memoryId: id });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ==============================================================================
-// 5. ACTION QUEUE API (public.action_queue - Human-in-the-Loop)
+// 6. ACTION QUEUE API (public.action_queue - Human-in-the-Loop)
 // ==============================================================================
 app.get('/api/actions', async (req: Request, res: Response) => {
   try {
@@ -418,7 +737,7 @@ app.post('/api/actions/reject', async (req: Request, res: Response) => {
 });
 
 // ==============================================================================
-// 6. TASKS & OPERATIONAL DIRECTIVES (public.tasks)
+// 7. TASKS & OPERATIONAL DIRECTIVES (public.tasks)
 // ==============================================================================
 app.get('/api/tasks', async (req: Request, res: Response) => {
   try {
@@ -492,5 +811,6 @@ server.listen(PORT, () => {
   console.log(`  JARVIS AI Core Server running on port ${PORT}`);
   console.log(`  Health Check: http://localhost:${PORT}/api/health`);
   console.log(`  Zero-Secret Enforced: Master API keys protected`);
+  console.log(`  Active Gemini Model: ${GEMINI_MODEL}`);
   console.log(`========================================================`);
 });

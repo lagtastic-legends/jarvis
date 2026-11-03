@@ -1,6 +1,25 @@
 import { MemoryItem, TaskDirective, ActionQueueItem, TelemetryData } from '../types/jarvis';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+// Dynamic API Base URL resolution:
+// 1. Vite environment override (VITE_API_URL)
+// 2. Dynamic host matching window.location.hostname for LAN / Mobile Android testing
+// 3. Fallback to localhost:3001
+export const getApiBase = (): string => {
+  if (import.meta.env.VITE_API_URL) {
+    return import.meta.env.VITE_API_URL;
+  }
+  if (typeof window !== 'undefined' && window.location && window.location.hostname) {
+    return `http://${window.location.hostname}:3001`;
+  }
+  return 'http://localhost:3001';
+};
+
+const API_BASE = getApiBase();
+
+export interface HistoryTurn {
+  role: 'user' | 'model' | 'assistant';
+  content: string;
+}
 
 export class JarvisApiClient {
   private ws: WebSocket | null = null;
@@ -14,8 +33,7 @@ export class JarvisApiClient {
   private connectWebSocket() {
     if (typeof window === 'undefined') return;
 
-    const wsUrl = (import.meta.env.VITE_API_URL || 'http://localhost:3001')
-      .replace(/^http/, 'ws') + '/api/ws';
+    const wsUrl = API_BASE.replace(/^http/, 'ws') + '/api/ws';
 
     try {
       this.ws = new WebSocket(wsUrl);
@@ -26,7 +44,7 @@ export class JarvisApiClient {
         try {
           const message = JSON.parse(event.data);
           if (message.type === 'TELEMETRY_SYNC' || message.type === 'TELEMETRY_UPDATE') {
-            this.telemetryCallbacks.forEach(cb => cb(message.payload));
+            this.telemetryCallbacks.forEach((cb) => cb(message.payload));
           }
         } catch (e) {
           console.error('[WS] Parse error:', e);
@@ -59,10 +77,12 @@ export class JarvisApiClient {
   // Health Check
   public async getHealth(): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/api/health`);
+      const res = await fetch(`${API_BASE}/api/health`, {
+        signal: AbortSignal.timeout(5000),
+      });
       return await res.json();
     } catch {
-      return { status: 'STANDALONE_AUTONOMOUS', zeroSecretLock: 'ACTIVE' };
+      return { status: 'OFFLINE', zeroSecretLock: 'ACTIVE' };
     }
   }
 
@@ -73,19 +93,110 @@ export class JarvisApiClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId }),
+        signal: AbortSignal.timeout(5000),
       });
       return await res.json();
     } catch {
       return {
         success: true,
         token: `jarvis_local_token_${Date.now()}`,
-        voiceProfile: { voice: 'en-GB-Neural2-B', accent: 'British Sophisticated', pitch: 0.95, rate: 1.10 },
+        voiceProfile: {
+          voice: 'en-GB-Neural2-B',
+          accent: 'British Sophisticated',
+          pitch: 0.95,
+          rate: 1.1,
+        },
       };
     }
   }
 
-  // Send message with seamless local fallback
-  public async sendChatMessage(message: string, conversationId?: string): Promise<{
+  /**
+   * Real-Time SSE Streaming Chat
+   * Connects to /api/chat/stream, streams token chunks, and reports final text
+   */
+  public async streamChatMessage(
+    message: string,
+    conversationId?: string,
+    history: HistoryTurn[] = [],
+    onChunk?: (chunk: string) => void,
+    onComplete?: (fullText: string, metadata?: any) => void,
+    signal?: AbortSignal
+  ): Promise<string> {
+    try {
+      const res = await fetch(`${API_BASE}/api/chat/stream`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, conversationId, history }),
+        signal,
+      });
+
+      if (!res.ok) {
+        throw new Error(`Server returned HTTP ${res.status}`);
+      }
+
+      if (!res.body) {
+        throw new Error('Response body stream is not available');
+      }
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      let fullText = '';
+      let actionTriggered: any = null;
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const jsonStr = trimmed.replace(/^data:\s*/, '');
+          if (!jsonStr) continue;
+
+          try {
+            const data = JSON.parse(jsonStr);
+            if (data.chunk && onChunk) {
+              onChunk(data.chunk);
+            }
+            if (data.done) {
+              fullText = data.fullText || fullText;
+              actionTriggered = data.actionTriggered;
+            }
+          } catch {
+            // Ignore partial SSE lines
+          }
+        }
+      }
+
+      if (onComplete) {
+        onComplete(fullText, actionTriggered);
+      }
+      return fullText;
+    } catch (err: any) {
+      if (signal?.aborted) {
+        throw err;
+      }
+      console.warn('[API] Streaming failure:', err);
+      const fallbackMsg = `Intelligence server unreachable at ${API_BASE}. Please verify server is online.`;
+      if (onChunk) onChunk(fallbackMsg);
+      if (onComplete) onComplete(fallbackMsg);
+      return fallbackMsg;
+    }
+  }
+
+  /**
+   * Non-Streaming Chat Directive
+   */
+  public async sendChatMessage(
+    message: string,
+    conversationId?: string,
+    history: HistoryTurn[] = []
+  ): Promise<{
     reply: string;
     state: string;
     actionTriggered?: any;
@@ -93,12 +204,12 @@ export class JarvisApiClient {
   }> {
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3500);
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
 
       const res = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, conversationId }),
+        body: JSON.stringify({ message, conversationId, history }),
         signal: controller.signal,
       });
 
@@ -108,61 +219,23 @@ export class JarvisApiClient {
         return await res.json();
       }
       throw new Error(`Server returned HTTP ${res.status}`);
-    } catch (err) {
-      console.warn('[API] Server offline or unreachable. Engaging autonomous local neural processor:', err);
-      return this.localDirectivesFallback(message);
+    } catch (err: any) {
+      console.warn('[API] Server error or timeout:', err);
+      return {
+        reply: `Network connection to JARVIS core server (${API_BASE}) could not be established. Please ensure server.ts is active.`,
+        state: 'IDLE',
+      };
     }
   }
 
-  // Autonomous local intelligence processor
-  private localDirectivesFallback(message: string): {
-    reply: string;
-    state: string;
-    actionTriggered?: any;
-    suggestedDirectives?: string[];
-  } {
-    const trimmed = message.trim();
-    let reply = '';
-    let actionTriggered: any = null;
-
-    if (/perimeter\s+scan/i.test(trimmed)) {
-      reply = 'Perimeter scan initiated, Sir. LiDAR sweep confirms all 36 sectors secure with zero unauthorized intrusions.';
-      actionTriggered = { type: 'SCAN_PERIMETER', status: 'COMPLETED', risk: 'low' };
-    } else if (/diagnostic|status\s+report/i.test(trimmed)) {
-      reply = 'Diagnostic complete. Arc Reactor operating at 98.4% efficiency. Thermal dispersion holds at 18.2%. All neural synapses nominal.';
-      actionTriggered = { type: 'RUN_DIAGNOSTIC', status: 'COMPLETED', risk: 'low' };
-    } else if (/flight\s+(dynamics|path)/i.test(trimmed)) {
-      reply = 'Flight dynamics updated. At Mach 3.4 cruise velocity, sub-orbital range remains 2,450 km. Repulsor thermal limits are within safe margins.';
-      actionTriggered = { type: 'FLIGHT_CALIBRATION', status: 'COMPLETED', risk: 'medium' };
-    } else if (/daily\s+briefing/i.test(trimmed)) {
-      reply = 'Good day, Sir. Stark Industries orbital communication alignment is complete. You have a scheduled Board briefing at 16:00. Weather in Malibu is 21.5°C with clear skies.';
-    } else if (/arm|deploy\s+shields|defcon/i.test(trimmed)) {
-      reply = 'Quantum shields energized to 100%. DEFCON 5 standby protocols engaged. Standing by for further commands.';
-      actionTriggered = { type: 'DEPLOY_SHIELDS', status: 'EXECUTING', risk: 'high' };
-    } else {
-      reply = `Understood, Sir. Processing your directive: "${trimmed}". Neural networks synched and telemetry recorded.`;
-    }
-
-    return {
-      reply,
-      state: 'SPEAKING',
-      actionTriggered,
-      suggestedDirectives: [
-        'Check power grid',
-        'Initiate perimeter scan',
-        'Compile flight dynamics',
-        'Review pending actions',
-      ],
-    };
-  }
-
-  // Fetch Memories with resilient local store
+  // Fetch Memories
   public async getMemories(category?: string): Promise<MemoryItem[]> {
     const defaultMemories: MemoryItem[] = [
       {
         id: 'mem_01',
         category: 'preference',
-        content: 'User prefers concise direct briefings, priority alerts on thermal power surges, and automatic flight path calibrations.',
+        content:
+          'User prefers concise direct briefings, priority alerts on thermal power surges, and automatic flight path calibrations.',
         is_active: true,
         confidence: '99.9%',
         created_at: new Date().toISOString(),
@@ -170,7 +243,8 @@ export class JarvisApiClient {
       {
         id: 'mem_02',
         category: 'project',
-        content: 'Active design initiative: Mark 85 Titanium composite outer carapace. Requires thermal shielding test in cryogenic environment.',
+        content:
+          'Active design initiative: Mark 85 Titanium composite outer carapace. Requires thermal shielding test in cryogenic environment.',
         is_active: true,
         confidence: '98.4%',
         created_at: new Date().toISOString(),
@@ -178,7 +252,8 @@ export class JarvisApiClient {
       {
         id: 'mem_03',
         category: 'instruction',
-        content: 'Auto-engage perimeter defense sweeps every 60 minutes when user is away from Malibu lab.',
+        content:
+          'Auto-engage perimeter defense sweeps every 60 minutes when user is away from Malibu lab.',
         is_active: true,
         confidence: '99.2%',
         created_at: new Date().toISOString(),
@@ -186,7 +261,8 @@ export class JarvisApiClient {
       {
         id: 'mem_04',
         category: 'fact',
-        content: 'Arc Reactor Mark VII core output threshold calibrated at 3.0 gigajoules/sec.',
+        content:
+          'Arc Reactor Mark VII core output threshold calibrated at 3.0 gigajoules/sec.',
         is_active: true,
         confidence: '100%',
         created_at: new Date().toISOString(),
@@ -195,12 +271,15 @@ export class JarvisApiClient {
 
     try {
       const url = new URL(`${API_BASE}/api/memories`);
-      if (category) url.searchParams.append('category', category);
-      const res = await fetch(url.toString(), { signal: AbortSignal.timeout(2000) });
+      if (category) url.searchParams.set('category', category);
+
+      const res = await fetch(url.toString(), {
+        signal: AbortSignal.timeout(3000),
+      });
       const data = await res.json();
       return data.memories && data.memories.length > 0 ? data.memories : defaultMemories;
     } catch {
-      return category ? defaultMemories.filter(m => m.category === category) : defaultMemories;
+      return category ? defaultMemories.filter((m) => m.category === category) : defaultMemories;
     }
   }
 
@@ -220,12 +299,25 @@ export class JarvisApiClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(memory),
-        signal: AbortSignal.timeout(2000),
+        signal: AbortSignal.timeout(3000),
       });
       const data = await res.json();
       return data.memory || fallback;
     } catch {
       return fallback;
+    }
+  }
+
+  // Delete Memory
+  public async deleteMemory(id: string): Promise<boolean> {
+    try {
+      const res = await fetch(`${API_BASE}/api/memories/${id}`, {
+        method: 'DELETE',
+        signal: AbortSignal.timeout(3000),
+      });
+      return res.ok;
+    } catch {
+      return false;
     }
   }
 
@@ -253,7 +345,9 @@ export class JarvisApiClient {
     ];
 
     try {
-      const res = await fetch(`${API_BASE}/api/actions`, { signal: AbortSignal.timeout(2000) });
+      const res = await fetch(`${API_BASE}/api/actions`, {
+        signal: AbortSignal.timeout(3000),
+      });
       const data = await res.json();
       return data.actions && data.actions.length > 0 ? data.actions : defaultActions;
     } catch {
@@ -268,7 +362,7 @@ export class JarvisApiClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ actionId }),
-        signal: AbortSignal.timeout(2000),
+        signal: AbortSignal.timeout(3000),
       });
       return await res.json();
     } catch {
@@ -283,7 +377,7 @@ export class JarvisApiClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ actionId }),
-        signal: AbortSignal.timeout(2000),
+        signal: AbortSignal.timeout(3000),
       });
       return await res.json();
     } catch {
@@ -321,7 +415,9 @@ export class JarvisApiClient {
     ];
 
     try {
-      const res = await fetch(`${API_BASE}/api/tasks`, { signal: AbortSignal.timeout(2000) });
+      const res = await fetch(`${API_BASE}/api/tasks`, {
+        signal: AbortSignal.timeout(3000),
+      });
       const data = await res.json();
       return data.tasks && data.tasks.length > 0 ? data.tasks : defaultTasks;
     } catch {
@@ -336,7 +432,7 @@ export class JarvisApiClient {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
-        signal: AbortSignal.timeout(2000),
+        signal: AbortSignal.timeout(3000),
       });
       return await res.json();
     } catch {

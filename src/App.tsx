@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   JarvisState, 
   TabId, 
@@ -92,6 +92,10 @@ export const App: React.FC = () => {
     { id: 'act_4', time: '10:40:55', text: 'Perimeter radar sweep clean (0 intrusions)', tag: 'DEFENSE' },
   ]);
 
+  // Real-time active conversation ID and streaming abort controller
+  const [activeConversationId] = useState<string>(() => 'conv_' + Math.random().toString(36).substring(2, 9));
+  const activeAbortControllerRef = useRef<AbortController | null>(null);
+
   // Toast Notification helper
   const showToast = useCallback((msg: string) => {
     setToastMessage(msg);
@@ -105,6 +109,19 @@ export const App: React.FC = () => {
       audioSynth.playStateSound(nextState);
     }
   }, [sfxEnabled]);
+
+  // Barge-in / Interrupt active AI streaming or speech playback
+  const handleBargeIn = useCallback(() => {
+    if (activeAbortControllerRef.current) {
+      activeAbortControllerRef.current.abort();
+      activeAbortControllerRef.current = null;
+    }
+    speechEngine.stop();
+    transitionAiState('INTERRUPTED');
+    setTimeout(() => {
+      transitionAiState('IDLE');
+    }, 450);
+  }, [transitionAiState]);
 
   // Initial load: Telemetry WebSocket, Memories, Tasks, Action Queue
   useEffect(() => {
@@ -143,63 +160,117 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  // Send Directive / Prompt handler
+  // Real-time Streaming Directive / Prompt handler with low-latency sentence speech
   const handleSendDirective = useCallback(async (text: string) => {
+    if (!text.trim()) return;
+
+    // Halt previous ongoing speech or stream (barge-in)
+    if (activeAbortControllerRef.current) {
+      activeAbortControllerRef.current.abort();
+    }
+    speechEngine.stop();
+
+    const controller = new AbortController();
+    activeAbortControllerRef.current = controller;
+
     audioSynth.playTransmit();
     transitionAiState('THINKING');
 
     const userMsg: ChatMessage = {
-      id: `msg_${Date.now()}`,
+      id: `msg_u_${Date.now()}`,
       sender: 'user',
       content: text,
       timestamp: new Date().toLocaleTimeString('en-GB', { hour12: false }),
     };
-    setMessages((prev) => [...prev, userMsg]);
+
+    const assistantMsgId = `msg_a_${Date.now() + 1}`;
+    const initialAssistantMsg: ChatMessage = {
+      id: assistantMsgId,
+      sender: 'assistant',
+      content: '',
+      timestamp: new Date().toLocaleTimeString('en-GB', { hour12: false }),
+    };
+
+    setMessages((prev) => [...prev, userMsg, initialAssistantMsg]);
+
+    // Map conversation turns into history payload
+    const historyPayload = messages.slice(-15).map((m) => ({
+      role: m.sender === 'user' ? ('user' as const) : ('assistant' as const),
+      content: m.content,
+    }));
+
+    let accumulated = '';
+    let hasStartedSpeaking = false;
 
     try {
-      const data = await api.sendChatMessage(text);
-      const assistantMsg: ChatMessage = {
-        id: `msg_${Date.now() + 1}`,
-        sender: 'assistant',
-        content: data.reply,
-        timestamp: new Date().toLocaleTimeString('en-GB', { hour12: false }),
-        metadata: data.actionTriggered,
-      };
+      await api.streamChatMessage(
+        text,
+        activeConversationId,
+        historyPayload,
+        (chunk) => {
+          accumulated += chunk;
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMsgId ? { ...m, content: accumulated } : m
+            )
+          );
+          setLiveCaption(accumulated);
 
-      setMessages((prev) => [...prev, assistantMsg]);
-      setLiveCaption(data.reply);
+          if (!hasStartedSpeaking) {
+            hasStartedSpeaking = true;
+            transitionAiState('SPEAKING');
+          }
 
-      // Add to activity stream
-      setActivityStream((prev) => [
-        {
-          id: `act_${Date.now()}`,
-          time: new Date().toLocaleTimeString('en-GB', { hour12: false }),
-          text: `Executed: "${text.slice(0, 32)}..."`,
-          tag: 'DIRECTIVE',
+          if (speechEnabled) {
+            speechEngine.speakStreamChunk(chunk);
+          }
         },
-        ...prev.slice(0, 10),
-      ]);
+        (finalText, actionTriggered) => {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === assistantMsgId
+                ? { ...m, content: finalText, metadata: actionTriggered }
+                : m
+            )
+          );
 
-      if (speechEnabled) {
-        transitionAiState('SPEAKING');
-        speechEngine.speak(data.reply, () => {
-          transitionAiState('IDLE');
-        });
-      } else {
-        transitionAiState('IDLE');
-      }
+          if (speechEnabled) {
+            speechEngine.finishStream(() => {
+              transitionAiState('IDLE');
+            });
+          } else {
+            transitionAiState('IDLE');
+          }
 
-      showToast(data.reply.slice(0, 60) + '...');
+          setActivityStream((prev) => [
+            {
+              id: `act_${Date.now()}`,
+              time: new Date().toLocaleTimeString('en-GB', { hour12: false }),
+              text: `Directive completed: "${text.slice(0, 30)}..."`,
+              tag: 'DIRECTIVE',
+            },
+            ...prev.slice(0, 10),
+          ]);
+
+          activeAbortControllerRef.current = null;
+        },
+        controller.signal
+      );
     } catch (err: any) {
-      console.error('[AI] Directive error:', err);
+      if (controller.signal.aborted) {
+        console.log('[AI] Stream aborted via barge-in');
+        transitionAiState('INTERRUPTED');
+        setTimeout(() => transitionAiState('IDLE'), 450);
+        return;
+      }
+      console.error('[AI] Directive stream error:', err);
       transitionAiState('ERROR');
       showToast('Neural processing anomaly detected. Auto-recovering...');
-      // Resilient auto-recovery back to IDLE so the console never stays locked in ERROR mode
       setTimeout(() => {
         transitionAiState('IDLE');
-      }, 3500);
+      }, 2500);
     }
-  }, [transitionAiState, speechEnabled, showToast]);
+  }, [transitionAiState, speechEnabled, showToast, messages, activeConversationId]);
 
   // Audio Toggles
   const handleToggleMute = useCallback(() => {
@@ -273,8 +344,7 @@ export const App: React.FC = () => {
         return;
       }
       if (e.key === 'Escape') {
-        speechEngine.stop();
-        transitionAiState('IDLE');
+        handleBargeIn();
       } else if (e.key === '1') {
         handleSendDirective('Initiate perimeter scan');
       } else if (e.key === '2') {
@@ -354,8 +424,12 @@ export const App: React.FC = () => {
                 speechEngine.speak(sample, () => transitionAiState('IDLE'));
               }}
               onOrbClick={() => {
-                audioSynth.playTacticalSweep();
-                transitionAiState(aiState === 'IDLE' ? 'LISTENING' : 'IDLE');
+                if (aiState === 'SPEAKING' || aiState === 'THINKING') {
+                  handleBargeIn();
+                } else {
+                  audioSynth.playTacticalSweep();
+                  setMicModalOpen(true);
+                }
               }}
               activityStream={activityStream}
             />
@@ -431,10 +505,10 @@ export const App: React.FC = () => {
       <MicrophoneModal
         isOpen={micModalOpen}
         onClose={() => setMicModalOpen(false)}
-        onAccessGranted={() => {
-          showToast('Acoustic sensor verified and active.');
-          transitionAiState('LISTENING');
+        onDirectiveCaptured={(transcript) => {
+          handleSendDirective(transcript);
         }}
+        onBargeIn={handleBargeIn}
       />
 
       <ActionApprovalModal

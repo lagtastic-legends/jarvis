@@ -86,7 +86,14 @@ export const NeuralChatView: React.FC<NeuralChatViewProps> = ({
                   <span className="font-bold text-cyan-400">{isUser ? 'TONY STARK' : 'JARVIS CORE'}</span>
                   <span>{msg.timestamp}</span>
                 </div>
-                <p className="whitespace-pre-wrap">{msg.content}</p>
+                <p className="whitespace-pre-wrap">
+                  {msg.content || (
+                    <span className="inline-flex items-center gap-1.5 text-cyan-400/80 animate-pulse text-[11px]">
+                      <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping" />
+                      Streaming neural response...
+                    </span>
+                  )}
+                </p>
               </div>
             </div>
           );
