@@ -11,7 +11,8 @@ const PORT = parseInt(process.env.PORT || '3001', 10);
 const SUPABASE_URL = process.env.SUPABASE_URL || 'http://localhost:54321';
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'dev_service_role_key';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash-lite';
 
 // Server-side privileged Supabase client (Zero-Secret: never leaked to client)
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
@@ -227,10 +228,12 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({
     status: 'ONLINE',
     service: 'JARVIS AI Core Engine',
-    version: '2.0.0',
+    version: '2.1.0',
     uptimeSeconds: Math.floor(process.uptime()),
     zeroSecretLock: 'ACTIVE',
     aiEngine: GEMINI_API_KEY ? `GEMINI_ACTIVE (${GEMINI_MODEL})` : 'MISSING_API_KEY',
+    primaryModel: GEMINI_MODEL,
+    fallbackModel: GEMINI_FALLBACK_MODEL,
     connectedWsClients: activeSockets.size,
     timestamp: new Date().toISOString(),
   });
@@ -307,23 +310,44 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
     const systemInstruction = buildSystemInstruction(memoryBlock);
     const contents = buildGeminiContents(history, trimmed);
 
-    const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:streamGenerateContent?alt=sse&key=${GEMINI_API_KEY}`;
+    const tryStream = async (model: string, timeoutMs: number = 3500) => {
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${GEMINI_API_KEY}`;
+      const timeoutSignal = AbortSignal.timeout(timeoutMs);
+      const combinedSignal = abortController.signal.aborted
+        ? abortController.signal
+        : (AbortSignal as any).any([abortController.signal, timeoutSignal]);
 
-    const geminiRes = await fetch(geminiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: abortController.signal,
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{ text: systemInstruction }],
-        },
-        contents,
-        generationConfig: {
-          temperature: 0.7,
-          maxOutputTokens: 600,
-        },
-      }),
-    });
+      return await fetch(geminiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: combinedSignal,
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{ text: systemInstruction }],
+          },
+          contents,
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 600,
+            thinkingConfig: {
+              thinkingBudget: 1024,
+            },
+          },
+        }),
+      });
+    };
+
+    let geminiRes: any = null;
+    try {
+      geminiRes = await tryStream(GEMINI_MODEL, 3500);
+      if (!geminiRes.ok && (geminiRes.status === 503 || geminiRes.status === 429 || geminiRes.status === 404)) {
+        throw new Error(`Primary model returned HTTP ${geminiRes.status}`);
+      }
+    } catch (primaryErr: any) {
+      if (abortController.signal.aborted) return;
+      console.warn(`[GEMINI_STREAM] ${GEMINI_MODEL} unserviceable (${primaryErr.message}). Engaging fallback to ${GEMINI_FALLBACK_MODEL}...`);
+      geminiRes = await tryStream(GEMINI_FALLBACK_MODEL, 15000);
+    }
 
     if (!geminiRes.ok) {
       const errText = await geminiRes.text();
@@ -484,23 +508,40 @@ app.post('/api/chat', async (req: Request, res: Response) => {
         const systemInstruction = buildSystemInstruction(memoryBlock);
         const contents = buildGeminiContents(history, trimmed);
 
-        const geminiRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${GEMINI_API_KEY}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              systemInstruction: {
-                parts: [{ text: systemInstruction }],
-              },
-              contents,
-              generationConfig: {
-                temperature: 0.7,
-                maxOutputTokens: 500,
-              },
-            }),
+        const tryGenerate = async (model: string, timeoutMs: number = 3500) => {
+          return await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              signal: AbortSignal.timeout(timeoutMs),
+              body: JSON.stringify({
+                systemInstruction: {
+                  parts: [{ text: systemInstruction }],
+                },
+                contents,
+                generationConfig: {
+                  temperature: 0.7,
+                  maxOutputTokens: 500,
+                  thinkingConfig: {
+                    thinkingBudget: 1024,
+                  },
+                },
+              }),
+            }
+          );
+        };
+
+        let geminiRes: any = null;
+        try {
+          geminiRes = await tryGenerate(GEMINI_MODEL, 3500);
+          if (!geminiRes.ok && (geminiRes.status === 503 || geminiRes.status === 429 || geminiRes.status === 404)) {
+            throw new Error(`Primary model returned HTTP ${geminiRes.status}`);
           }
-        );
+        } catch (primaryErr: any) {
+          console.warn(`[GEMINI_API] ${GEMINI_MODEL} unserviceable (${primaryErr.message}). Engaging fallback: ${GEMINI_FALLBACK_MODEL}`);
+          geminiRes = await tryGenerate(GEMINI_FALLBACK_MODEL, 15000);
+        }
 
         if (geminiRes.ok) {
           const geminiData = await geminiRes.json();
