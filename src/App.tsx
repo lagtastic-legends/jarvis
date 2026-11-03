@@ -193,7 +193,11 @@ export const App: React.FC = () => {
     } catch (err: any) {
       console.error('[AI] Directive error:', err);
       transitionAiState('ERROR');
-      showToast('Neural processing error occurred.');
+      showToast('Neural processing anomaly detected. Auto-recovering...');
+      // Resilient auto-recovery back to IDLE so the console never stays locked in ERROR mode
+      setTimeout(() => {
+        transitionAiState('IDLE');
+      }, 3500);
     }
   }, [transitionAiState, speechEnabled, showToast]);
 
