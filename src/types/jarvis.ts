@@ -32,12 +32,31 @@ export interface TelemetryData {
   cpuLoad?: string;
 }
 
+export type ClientActionType = 
+  | 'OPEN_APP'
+  | 'OPEN_MULTIPLE_WINDOWS'
+  | 'COMPOSE_EMAIL'
+  | 'REPLY_TO_MESSAGE'
+  | 'MANAGE_TASK'
+  | 'SYSTEM_CONTROL';
+
+export interface ClientAction {
+  id: string;
+  type: ClientActionType;
+  title: string;
+  payload: Record<string, any>;
+  status: 'pending' | 'executed' | 'failed';
+  executedAt?: string;
+  result?: string;
+}
+
 export interface ChatMessage {
   id: string;
   sender: 'user' | 'assistant' | 'system';
   content: string;
   timestamp: string;
   metadata?: Record<string, any>;
+  actions?: ClientAction[];
 }
 
 export interface MemoryItem {

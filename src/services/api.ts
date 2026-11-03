@@ -119,7 +119,7 @@ export class JarvisApiClient {
     conversationId?: string,
     history: HistoryTurn[] = [],
     onChunk?: (chunk: string) => void,
-    onComplete?: (fullText: string, metadata?: any) => void,
+    onComplete?: (fullText: string, metadata?: any, clientActions?: any[]) => void,
     signal?: AbortSignal
   ): Promise<string> {
     try {
@@ -143,6 +143,7 @@ export class JarvisApiClient {
       let buffer = '';
       let fullText = '';
       let actionTriggered: any = null;
+      let clientActions: any[] = [];
 
       while (true) {
         const { value, done } = await reader.read();
@@ -166,6 +167,7 @@ export class JarvisApiClient {
             if (data.done) {
               fullText = data.fullText || fullText;
               actionTriggered = data.actionTriggered;
+              clientActions = data.clientActions || [];
             }
           } catch {
             // Ignore partial SSE lines
@@ -174,7 +176,7 @@ export class JarvisApiClient {
       }
 
       if (onComplete) {
-        onComplete(fullText, actionTriggered);
+        onComplete(fullText, actionTriggered, clientActions);
       }
       return fullText;
     } catch (err: any) {
@@ -200,6 +202,7 @@ export class JarvisApiClient {
     reply: string;
     state: string;
     actionTriggered?: any;
+    clientActions?: any[];
     suggestedDirectives?: string[];
   }> {
     try {

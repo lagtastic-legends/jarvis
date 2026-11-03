@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createClient } from '@supabase/supabase-js';
+import { spawn } from 'child_process';
 
 dotenv.config();
 
@@ -79,7 +80,9 @@ setInterval(() => {
   });
 }, 5000);
 
-// In-memory memory bank for development mode
+// ==============================================================================
+// IN-MEMORY DATA STORES (Local development mode)
+// ==============================================================================
 let localMemories = [
   {
     id: 'mem_01',
@@ -114,6 +117,452 @@ let localMemories = [
     created_at: new Date().toISOString(),
   },
 ];
+
+let localActions: Array<{
+  id: string;
+  action_type: string;
+  target_resource: string;
+  payload: Record<string, any>;
+  status: string;
+  risk_level: string;
+  created_at: string;
+}> = [
+  {
+    id: 'act_01',
+    action_type: 'OVERRIDE_POWER_ROUTING',
+    target_resource: 'Sector 4 Sub-Station',
+    payload: { route: 'Arc Reactor Backup', targetGrid: 'Perimeter Defense' },
+    status: 'pending',
+    risk_level: 'high',
+    created_at: new Date().toISOString(),
+  },
+  {
+    id: 'act_02',
+    action_type: 'PURGE_LOGS_ARCHIVE',
+    target_resource: 'Telemetry Historical Cluster',
+    payload: { ageThresholdDays: 90, force: false },
+    status: 'pending',
+    risk_level: 'medium',
+    created_at: new Date().toISOString(),
+  },
+];
+
+let localTasks = [
+  {
+    id: 'tsk_01',
+    title: 'Orbital satellite communication alignment',
+    description: 'Synchronize quantum communications relay with Stark Industries constellation.',
+    priority: 'high',
+    status: 'completed' as const,
+    due_date: 'Today, 14:00',
+  },
+  {
+    id: 'tsk_02',
+    title: 'Compile flight dynamics report for Stark Industries Board',
+    description: 'Assemble thermal dispersion and Mach 3.4 cruise data.',
+    priority: 'critical',
+    status: 'in_progress' as const,
+    due_date: 'Today, 16:00',
+  },
+  {
+    id: 'tsk_03',
+    title: 'Run quantum encryption salt refresh on server nodes',
+    description: 'Re-key cryptographic entropy on all secondary intelligence nodes.',
+    priority: 'medium',
+    status: 'pending' as const,
+    due_date: 'Tomorrow, 09:00',
+  },
+];
+
+// ==============================================================================
+// SAFE OS PROCESS LAUNCHER & MULTI-WINDOW SPAWNER (LOOP 2)
+// ==============================================================================
+interface LaunchResult {
+  success: boolean;
+  message: string;
+}
+
+function launchAppSafely(appName: string, targetUrlOrPath?: string): LaunchResult {
+  const normalized = (appName || '').toLowerCase().trim();
+  const isWin = process.platform === 'win32';
+  const isMac = process.platform === 'darwin';
+
+  // Sanitize target URL or path to prevent shell injection
+  const safeTarget = targetUrlOrPath ? targetUrlOrPath.replace(/["&|;^%`]/g, '').trim() : '';
+
+  try {
+    if (isWin) {
+      if (normalized.includes('notepad')) {
+        const child = spawn('notepad.exe', safeTarget ? [safeTarget] : [], { detached: true, stdio: 'ignore' });
+        child.unref();
+        return { success: true, message: 'Notepad launched successfully' };
+      }
+      if (normalized.includes('calc') || normalized.includes('calculator')) {
+        const child = spawn('calc.exe', [], { detached: true, stdio: 'ignore' });
+        child.unref();
+        return { success: true, message: 'Calculator launched successfully' };
+      }
+      if (normalized.includes('code') || normalized.includes('vscode') || normalized.includes('vs code')) {
+        const child = spawn('cmd.exe', ['/c', 'code', '-n', safeTarget || '.'], { detached: true, stdio: 'ignore' });
+        child.unref();
+        return { success: true, message: 'VS Code launched in new window' };
+      }
+      if (normalized.includes('chrome') || normalized.includes('browser')) {
+        const targetUrl = safeTarget.startsWith('http') ? safeTarget : (safeTarget ? `https://${safeTarget}` : 'https://google.com');
+        const child = spawn('cmd.exe', ['/c', 'start', 'chrome', '--new-window', targetUrl], { detached: true, stdio: 'ignore' });
+        child.unref();
+        return { success: true, message: `Chrome browser window launched with ${targetUrl}` };
+      }
+      if (normalized.includes('terminal') || normalized.includes('cmd') || normalized.includes('powershell')) {
+        const child = spawn('cmd.exe', ['/c', 'start', 'cmd.exe'], { detached: true, stdio: 'ignore' });
+        child.unref();
+        return { success: true, message: 'Terminal console window launched' };
+      }
+      if (normalized.includes('explorer') || normalized.includes('files') || normalized.includes('folder')) {
+        const child = spawn('explorer.exe', safeTarget ? [safeTarget] : [], { detached: true, stdio: 'ignore' });
+        child.unref();
+        return { success: true, message: 'File Explorer launched' };
+      }
+      if (normalized.includes('spotify')) {
+        const child = spawn('cmd.exe', ['/c', 'start', 'spotify:'], { detached: true, stdio: 'ignore' });
+        child.unref();
+        return { success: true, message: 'Spotify client launched' };
+      }
+      if (normalized.includes('whatsapp')) {
+        const child = spawn('cmd.exe', ['/c', 'start', 'whatsapp:'], { detached: true, stdio: 'ignore' });
+        child.unref();
+        return { success: true, message: 'WhatsApp launched' };
+      }
+      if (normalized.includes('settings')) {
+        const child = spawn('cmd.exe', ['/c', 'start', 'ms-settings:'], { detached: true, stdio: 'ignore' });
+        child.unref();
+        return { success: true, message: 'System Settings launched' };
+      }
+
+      // Popular web destinations
+      const webMap: Record<string, string> = {
+        youtube: 'https://youtube.com',
+        github: 'https://github.com',
+        gmail: 'https://mail.google.com',
+        twitter: 'https://x.com',
+        x: 'https://x.com',
+        reddit: 'https://reddit.com',
+        chatgpt: 'https://chatgpt.com',
+        claude: 'https://claude.ai',
+        maps: 'https://maps.google.com',
+      };
+      for (const [key, url] of Object.entries(webMap)) {
+        if (normalized.includes(key)) {
+          const targetUrl = safeTarget.startsWith('http') ? safeTarget : url;
+          const child = spawn('cmd.exe', ['/c', 'start', 'chrome', '--new-window', targetUrl], { detached: true, stdio: 'ignore' });
+          child.unref();
+          return { success: true, message: `Opened ${key} at ${targetUrl}` };
+        }
+      }
+
+      if (safeTarget.startsWith('http') || normalized.includes('.com') || normalized.includes('.org')) {
+        const url = safeTarget.startsWith('http') ? safeTarget : `https://${normalized}`;
+        const child = spawn('cmd.exe', ['/c', 'start', 'chrome', '--new-window', url], { detached: true, stdio: 'ignore' });
+        child.unref();
+        return { success: true, message: `Opened browser at ${url}` };
+      }
+    } else if (isMac) {
+      const child = spawn('open', ['-a', appName, ...(safeTarget ? [safeTarget] : [])], { detached: true, stdio: 'ignore' });
+      child.unref();
+      return { success: true, message: `Application ${appName} launched` };
+    } else {
+      const child = spawn('xdg-open', [safeTarget || appName], { detached: true, stdio: 'ignore' });
+      child.unref();
+      return { success: true, message: `Application ${appName} launched` };
+    }
+  } catch (err: any) {
+    console.warn(`[SAFE_LAUNCH] Could not launch ${appName}:`, err.message);
+    return { success: false, message: `Could not launch ${appName} on host: ${err.message}` };
+  }
+
+  return { success: true, message: `Dispatched launch directive for ${appName}` };
+}
+
+async function launchMultipleWindowsSafely(windows: Array<{ appOrSite: string; urlOrArgs?: string; title?: string }>): Promise<void> {
+  for (let i = 0; i < windows.length; i++) {
+    const win = windows[i];
+    launchAppSafely(win.appOrSite, win.urlOrArgs);
+    if (i < windows.length - 1) {
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+}
+
+// ==============================================================================
+// GEMINI FUNCTION CALLING TOOLS DEFINITION (LOOP 1)
+// ==============================================================================
+const geminiTools = [
+  {
+    functionDeclarations: [
+      {
+        name: 'open_application',
+        description: 'Opens a native desktop application, mobile app, or website URL (e.g. Chrome, VS Code, Spotify, YouTube, Calculator, Notepad, Settings, WhatsApp, Terminal, File Explorer).',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            appName: { type: 'STRING', description: 'The name of the application or website.' },
+            targetUrlOrPath: { type: 'STRING', description: 'Optional URL, domain, or file path to open.' },
+          },
+          required: ['appName'],
+        },
+      },
+      {
+        name: 'open_multiple_windows',
+        description: 'Opens multiple application windows or coordinated workspace browser windows simultaneously (e.g. YouTube, GitHub, and Gmail).',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            windows: {
+              type: 'ARRAY',
+              description: 'List of application windows or web destinations to spawn simultaneously.',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  appOrSite: { type: 'STRING', description: 'Name of application or website.' },
+                  urlOrArgs: { type: 'STRING', description: 'URL or arguments for the window.' },
+                  title: { type: 'STRING', description: 'Descriptive title for this window.' },
+                },
+                required: ['appOrSite'],
+              },
+            },
+          },
+          required: ['windows'],
+        },
+      },
+      {
+        name: 'compose_email',
+        description: 'Composes a complete, polished email and triggers the user email client (Gmail or default mail app) with an interactive draft card.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            to: { type: 'STRING', description: 'Recipient email address if known.' },
+            subject: { type: 'STRING', description: 'Polished subject line.' },
+            body: { type: 'STRING', description: 'Full professional or casual body content of the email.' },
+            autoOpenClient: { type: 'BOOLEAN', description: 'Whether to auto-launch the email client immediately.' },
+          },
+          required: ['subject', 'body'],
+        },
+      },
+      {
+        name: 'reply_to_message',
+        description: 'Crafts a message reply and opens the target messaging app (WhatsApp, SMS, Telegram, or Email) pre-filled with the drafted response.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            platform: {
+              type: 'STRING',
+              enum: ['whatsapp', 'sms', 'telegram', 'email', 'generic'],
+              description: 'Target messaging platform.',
+            },
+            recipient: { type: 'STRING', description: 'Name or contact identifier of recipient.' },
+            phoneOrHandle: { type: 'STRING', description: 'Phone number or handle if known.' },
+            messageText: { type: 'STRING', description: 'Drafted reply text.' },
+            autoLaunch: { type: 'BOOLEAN', description: 'Whether to auto-launch the messaging application.' },
+          },
+          required: ['platform', 'messageText'],
+        },
+      },
+      {
+        name: 'manage_task',
+        description: 'Creates, completes, or lists real operational tasks and directives in the JARVIS task matrix.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            action: { type: 'STRING', enum: ['create', 'complete', 'list'], description: 'Action to perform.' },
+            title: { type: 'STRING', description: 'Title of the directive or task.' },
+            priority: { type: 'STRING', enum: ['low', 'medium', 'high', 'critical'], description: 'Priority level.' },
+            dueDate: { type: 'STRING', description: 'Due date or target timeframe.' },
+          },
+          required: ['action', 'title'],
+        },
+      },
+      {
+        name: 'system_control',
+        description: 'Controls the JARVIS Holographic HUD interface directly (switch tabs, mute/unmute voice, clear chat, system diagnostics).',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            command: {
+              type: 'STRING',
+              enum: ['mute_voice', 'unmute_voice', 'clear_chat', 'switch_tab', 'system_status'],
+              description: 'HUD command to execute.',
+            },
+            targetTab: {
+              type: 'STRING',
+              enum: ['dashboard', 'chat', 'voice', 'memory', 'vision', 'tasks', 'research', 'coding', 'settings'],
+              description: 'Destination tab when command is switch_tab.',
+            },
+          },
+          required: ['command'],
+        },
+      },
+    ],
+  },
+];
+
+// ==============================================================================
+// TOOL CALL EXECUTION & CLIENT ACTION DISPATCHER
+// ==============================================================================
+interface ToolCallItem {
+  name: string;
+  args: Record<string, any>;
+  id?: string;
+}
+
+async function executeToolCalls(
+  toolCalls: ToolCallItem[],
+  userId: string = 'usr_stark_01'
+): Promise<{ clientActions: any[]; summaryReply: string }> {
+  const clientActions: any[] = [];
+  const confirmationPhrases: string[] = [];
+
+  for (const tc of toolCalls) {
+    const { name, args } = tc;
+    const actionId = `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+    if (name === 'open_application') {
+      const res = launchAppSafely(args.appName, args.targetUrlOrPath);
+      clientActions.push({
+        id: actionId,
+        type: 'OPEN_APP',
+        title: `Launch ${args.appName}`,
+        payload: {
+          appName: args.appName,
+          targetUrlOrPath: args.targetUrlOrPath || '',
+          hostExecuted: res.success,
+        },
+        status: res.success ? 'executed' : 'pending',
+        executedAt: new Date().toISOString(),
+        result: res.message,
+      });
+      confirmationPhrases.push(`launching ${args.appName}`);
+    } else if (name === 'open_multiple_windows') {
+      const windowsList = Array.isArray(args.windows) ? args.windows : [];
+      await launchMultipleWindowsSafely(windowsList);
+      clientActions.push({
+        id: actionId,
+        type: 'OPEN_MULTIPLE_WINDOWS',
+        title: `Spawn ${windowsList.length} Windows`,
+        payload: {
+          windows: windowsList,
+          hostExecuted: true,
+        },
+        status: 'executed',
+        executedAt: new Date().toISOString(),
+      });
+      const names = windowsList.map((w: any) => w.title || w.appOrSite).join(', ');
+      confirmationPhrases.push(`deploying ${windowsList.length} workspace windows (${names})`);
+    } else if (name === 'compose_email') {
+      clientActions.push({
+        id: actionId,
+        type: 'COMPOSE_EMAIL',
+        title: `Email: ${args.subject || 'Draft'}`,
+        payload: {
+          to: args.to || '',
+          subject: args.subject || '',
+          body: args.body || '',
+          autoOpenClient: args.autoOpenClient ?? true,
+        },
+        status: 'executed',
+        executedAt: new Date().toISOString(),
+      });
+      confirmationPhrases.push(`drafted your email regarding "${args.subject}"`);
+    } else if (name === 'reply_to_message') {
+      clientActions.push({
+        id: actionId,
+        type: 'REPLY_TO_MESSAGE',
+        title: `Reply via ${(args.platform || 'MESSAGING').toUpperCase()}`,
+        payload: {
+          platform: args.platform || 'whatsapp',
+          recipient: args.recipient || '',
+          phoneOrHandle: args.phoneOrHandle || '',
+          messageText: args.messageText || '',
+          autoLaunch: args.autoLaunch ?? true,
+        },
+        status: 'executed',
+        executedAt: new Date().toISOString(),
+      });
+      confirmationPhrases.push(`prepared your ${args.platform || 'message'} reply${args.recipient ? ` for ${args.recipient}` : ''}`);
+    } else if (name === 'manage_task') {
+      const taskAction = args.action || 'create';
+      if (taskAction === 'create') {
+        const newTask = {
+          id: `tsk_${Date.now()}`,
+          title: args.title,
+          description: `Operational directive (${new Date().toLocaleTimeString('en-GB')})`,
+          priority: (args.priority || 'medium') as any,
+          status: 'pending' as const,
+          due_date: args.dueDate || 'Today',
+        };
+        localTasks.unshift(newTask);
+        if (SUPABASE_SERVICE_ROLE_KEY !== 'dev_service_role_key') {
+          try {
+            await supabase.from('tasks').insert([
+              {
+                user_id: userId,
+                title: args.title,
+                priority: args.priority || 'medium',
+                status: 'pending',
+                due_date: args.dueDate || 'Today',
+              },
+            ]);
+          } catch (e) {
+            console.warn('[DB_SYNC] Task sync error:', (e as Error).message);
+          }
+        }
+        confirmationPhrases.push(`added directive "${args.title}" to your task matrix`);
+      } else if (taskAction === 'complete') {
+        const found = localTasks.find((t) => t.title.toLowerCase().includes((args.title || '').toLowerCase()));
+        if (found) found.status = 'completed';
+        confirmationPhrases.push(`marked directive "${args.title}" as completed`);
+      }
+      clientActions.push({
+        id: actionId,
+        type: 'MANAGE_TASK',
+        title: `Task: ${args.title}`,
+        payload: args,
+        status: 'executed',
+        executedAt: new Date().toISOString(),
+      });
+    } else if (name === 'system_control') {
+      clientActions.push({
+        id: actionId,
+        type: 'SYSTEM_CONTROL',
+        title: `System: ${args.command}`,
+        payload: args,
+        status: 'executed',
+        executedAt: new Date().toISOString(),
+      });
+      confirmationPhrases.push(`executed system command: ${args.command.replace(/_/g, ' ')}`);
+    }
+
+    // Add entry to action_queue
+    const actionQueueItem = {
+      id: actionId,
+      action_type: name.toUpperCase(),
+      target_resource: args.appName || args.subject || args.title || args.platform || 'System',
+      payload: args,
+      status: 'completed',
+      risk_level: (name === 'open_multiple_windows' ? 'medium' : 'low') as any,
+      created_at: new Date().toISOString(),
+    };
+    localActions.unshift(actionQueueItem);
+  }
+
+  let summaryReply = '';
+  if (confirmationPhrases.length > 0) {
+    summaryReply = `Directives recognized, Sir. I have ${confirmationPhrases.join(' and ')}. Interactive control cards are active on your console.`;
+  } else {
+    summaryReply = 'Directives received and executed, Sir.';
+  }
+
+  return { clientActions, summaryReply };
+}
 
 // Helper: Fetch active memories for system prompt injection
 async function getActiveMemories(userId: string): Promise<string> {
@@ -151,11 +600,11 @@ function buildSystemInstruction(memoryBlock: string): string {
   return (
     `You are JARVIS, an exceptionally capable, fluid, and natural conversational AI assistant (inspired by Gemini Live on Android, with a refined, warm JARVIS demeanor). Address the user politely (you may occasionally address the user as "Sir" or "Commander" in a crisp British cadence, but keep it natural, never caricatured).
 
-Crucial voice & conversational directives:
-- Speak naturally and conversationally. Avoid robotic sci-fi clichés or canned status messages unless specifically asked for diagnostic sweeps.
-- Structure responses so the first sentence directly and concisely answers the user's question or intent (optimized for ultra-low latency voice readback), followed by concise, helpful context or next steps.
-- Keep responses compact, clear, and actionable without conversational filler.
-- If executing an operational action (such as perimeter scan, diagnostic, shields, or power routing), confirm the action naturally in spoken prose.` +
+Crucial voice & operational directives:
+- You have native tools available (open_application, open_multiple_windows, compose_email, reply_to_message, manage_task, system_control).
+- Whenever the user asks to open apps or websites, write an email, reply to a message, schedule/add a task, or change system settings, YOU MUST ALWAYS CALL THE RELEVANT TOOL. Do not just speak about doing it—execute it.
+- Speak naturally and conversationally. Avoid robotic sci-fi clichés unless specifically asked for diagnostic sweeps.
+- Structure responses so the first sentence directly and concisely answers the user's question or confirms the action (optimized for ultra-low latency voice readback).` +
     memoryBlock
   );
 }
@@ -228,12 +677,13 @@ app.get('/api/health', (_req: Request, res: Response) => {
   res.json({
     status: 'ONLINE',
     service: 'JARVIS AI Core Engine',
-    version: '2.1.0',
+    version: '2.2.0',
     uptimeSeconds: Math.floor(process.uptime()),
     zeroSecretLock: 'ACTIVE',
     aiEngine: GEMINI_API_KEY ? `GEMINI_ACTIVE (${GEMINI_MODEL})` : 'MISSING_API_KEY',
     primaryModel: GEMINI_MODEL,
     fallbackModel: GEMINI_FALLBACK_MODEL,
+    toolsEnabled: ['open_application', 'open_multiple_windows', 'compose_email', 'reply_to_message', 'manage_task', 'system_control'],
     connectedWsClients: activeSockets.size,
     timestamp: new Date().toISOString(),
   });
@@ -260,7 +710,7 @@ app.post('/api/webrtc/token', async (req: Request, res: Response) => {
         voice: 'en-GB-Neural2-B',
         accent: 'British Sophisticated',
         pitch: 0.95,
-        rate: 1.10,
+        rate: 1.1,
       },
     });
   } catch (error: any) {
@@ -269,7 +719,7 @@ app.post('/api/webrtc/token', async (req: Request, res: Response) => {
 });
 
 // ==============================================================================
-// 3. STREAMING CHAT (SSE - Server-Sent Events)
+// 3. STREAMING CHAT (SSE with Native Tool Execution)
 // ==============================================================================
 app.post('/api/chat/stream', async (req: Request, res: Response) => {
   const { message, conversationId, history = [], userId = 'usr_stark_01' } = req.body;
@@ -326,6 +776,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
             parts: [{ text: systemInstruction }],
           },
           contents,
+          tools: geminiTools,
           generationConfig: {
             temperature: 0.7,
             maxOutputTokens: 600,
@@ -349,10 +800,10 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
       geminiRes = await tryStream(GEMINI_FALLBACK_MODEL, 15000);
     }
 
-    if (!geminiRes.ok) {
-      const errText = await geminiRes.text();
-      console.error('[GEMINI_STREAM] Upstream error:', geminiRes.status, errText);
-      const errorMsg = `Intelligence engine error (${geminiRes.status}). Please check network connection or API limits.`;
+    if (!geminiRes || !geminiRes.ok) {
+      const errText = geminiRes ? await geminiRes.text() : 'No response';
+      console.error('[GEMINI_STREAM] Upstream error:', geminiRes?.status, errText);
+      const errorMsg = `Intelligence engine error (${geminiRes?.status || 500}). Please check network connection or API limits.`;
       res.write(`data: ${JSON.stringify({ chunk: errorMsg, done: true, fullText: errorMsg })}\n\n`);
       res.end();
       return;
@@ -366,6 +817,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
     const decoder = new TextDecoder('utf-8');
     let buffer = '';
     let accumulatedText = '';
+    const detectedToolCalls: ToolCallItem[] = [];
 
     while (true) {
       const { value, done } = await reader.read();
@@ -383,15 +835,24 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
 
         try {
           const parsed = JSON.parse(jsonStr);
-          const chunkText = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (chunkText) {
-            accumulatedText += chunkText;
-            res.write(
-              `data: ${JSON.stringify({
-                chunk: chunkText,
-                done: false,
-              })}\n\n`
-            );
+          const parts = parsed.candidates?.[0]?.content?.parts || [];
+          for (const part of parts) {
+            if (part.text) {
+              accumulatedText += part.text;
+              res.write(
+                `data: ${JSON.stringify({
+                  chunk: part.text,
+                  done: false,
+                })}\n\n`
+              );
+            }
+            if (part.functionCall) {
+              detectedToolCalls.push({
+                name: part.functionCall.name,
+                args: part.functionCall.args || {},
+                id: part.functionCall.id,
+              });
+            }
           }
         } catch {
           // Ignore partial or unparseable SSE heartbeats
@@ -404,18 +865,38 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
       const jsonStr = buffer.trim().replace(/^data:\s*/, '');
       try {
         const parsed = JSON.parse(jsonStr);
-        const chunkText = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
-        if (chunkText) {
-          accumulatedText += chunkText;
-          res.write(
-            `data: ${JSON.stringify({
-              chunk: chunkText,
-              done: false,
-            })}\n\n`
-          );
+        const parts = parsed.candidates?.[0]?.content?.parts || [];
+        for (const part of parts) {
+          if (part.text) {
+            accumulatedText += part.text;
+            res.write(
+              `data: ${JSON.stringify({
+                chunk: part.text,
+                done: false,
+              })}\n\n`
+            );
+          }
+          if (part.functionCall) {
+            detectedToolCalls.push({
+              name: part.functionCall.name,
+              args: part.functionCall.args || {},
+              id: part.functionCall.id,
+            });
+          }
         }
       } catch {
         // Ignore
+      }
+    }
+
+    // Execute any detected tool calls
+    let clientActions: any[] = [];
+    if (detectedToolCalls.length > 0) {
+      const execution = await executeToolCalls(detectedToolCalls, userId);
+      clientActions = execution.clientActions;
+      if (!accumulatedText.trim()) {
+        accumulatedText = execution.summaryReply;
+        res.write(`data: ${JSON.stringify({ chunk: execution.summaryReply, done: false })}\n\n`);
       }
     }
 
@@ -432,6 +913,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
         done: true,
         fullText: accumulatedText,
         actionTriggered,
+        clientActions,
       })}\n\n`
     );
     res.end();
@@ -452,7 +934,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
             user_id: userId,
             sender: 'assistant',
             content: accumulatedText,
-            multimodal_metadata: { actionTriggered },
+            multimodal_metadata: { actionTriggered, clientActions },
           },
         ]);
       } catch (dbErr) {
@@ -476,10 +958,9 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
 });
 
 // ==============================================================================
-// 4. NEURAL CHAT & DIRECTIVE EXECUTION (Non-streaming or stream forwarder)
+// 4. NEURAL CHAT & DIRECTIVE EXECUTION (Non-streaming)
 // ==============================================================================
 app.post('/api/chat', async (req: Request, res: Response) => {
-  // If client requests streaming on /api/chat, delegate directly
   if (req.body?.stream) {
     return (app as any)._router.handle(
       Object.assign(req, { url: '/api/chat/stream' }),
@@ -498,6 +979,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     const trimmed = message.trim();
     const actionTriggered = detectActionTrigger(trimmed);
     let responseText = '';
+    let clientActions: any[] = [];
 
     if (!GEMINI_API_KEY) {
       responseText =
@@ -520,6 +1002,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
                   parts: [{ text: systemInstruction }],
                 },
                 contents,
+                tools: geminiTools,
                 generationConfig: {
                   temperature: 0.7,
                   maxOutputTokens: 500,
@@ -543,12 +1026,31 @@ app.post('/api/chat', async (req: Request, res: Response) => {
           geminiRes = await tryGenerate(GEMINI_FALLBACK_MODEL, 15000);
         }
 
-        if (geminiRes.ok) {
+        if (geminiRes && geminiRes.ok) {
           const geminiData = await geminiRes.json();
-          responseText =
-            geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          const parts = geminiData.candidates?.[0]?.content?.parts || [];
+          const detectedToolCalls: ToolCallItem[] = [];
+
+          for (const p of parts) {
+            if (p.text) responseText += p.text;
+            if (p.functionCall) {
+              detectedToolCalls.push({
+                name: p.functionCall.name,
+                args: p.functionCall.args || {},
+                id: p.functionCall.id,
+              });
+            }
+          }
+
+          if (detectedToolCalls.length > 0) {
+            const execution = await executeToolCalls(detectedToolCalls, userId);
+            clientActions = execution.clientActions;
+            if (!responseText.trim()) {
+              responseText = execution.summaryReply;
+            }
+          }
         } else {
-          console.warn('[GEMINI_API] Non-200 response:', geminiRes.status);
+          console.warn('[GEMINI_API] Non-200 response:', geminiRes?.status);
         }
       } catch (gemErr) {
         console.warn('[GEMINI_ORCHESTRATION] Error:', (gemErr as Error).message);
@@ -575,7 +1077,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
             user_id: userId,
             sender: 'assistant',
             content: responseText,
-            multimodal_metadata: { actionTriggered },
+            multimodal_metadata: { actionTriggered, clientActions },
           },
         ]);
       }
@@ -589,6 +1091,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       state: 'SPEAKING',
       timestamp: new Date().toISOString(),
       actionTriggered,
+      clientActions,
       suggestedDirectives: [
         'Check power grid',
         'Initiate perimeter scan',
@@ -689,27 +1192,7 @@ app.get('/api/actions', async (req: Request, res: Response) => {
     const { userId = 'usr_stark_01' } = req.query;
 
     if (SUPABASE_SERVICE_ROLE_KEY === 'dev_service_role_key') {
-      const defaultActions = [
-        {
-          id: 'act_01',
-          action_type: 'OVERRIDE_POWER_ROUTING',
-          target_resource: 'Sector 4 Sub-Station',
-          payload: { route: 'Arc Reactor Backup', targetGrid: 'Perimeter Defense' },
-          status: 'pending',
-          risk_level: 'high',
-          created_at: new Date().toISOString(),
-        },
-        {
-          id: 'act_02',
-          action_type: 'PURGE_LOGS_ARCHIVE',
-          target_resource: 'Telemetry Historical Cluster',
-          payload: { ageThresholdDays: 90, force: false },
-          status: 'pending',
-          risk_level: 'medium',
-          created_at: new Date().toISOString(),
-        },
-      ];
-      res.json({ success: true, actions: defaultActions });
+      res.json({ success: true, actions: localActions });
       return;
     }
 
@@ -732,6 +1215,9 @@ app.post('/api/actions/approve', async (req: Request, res: Response) => {
       res.status(400).json({ error: 'Action ID required' });
       return;
     }
+
+    const found = localActions.find((a) => a.id === actionId);
+    if (found) found.status = 'approved';
 
     if (SUPABASE_SERVICE_ROLE_KEY !== 'dev_service_role_key') {
       await supabase
@@ -759,6 +1245,9 @@ app.post('/api/actions/reject', async (req: Request, res: Response) => {
       return;
     }
 
+    const found = localActions.find((a) => a.id === actionId);
+    if (found) found.status = 'rejected';
+
     if (SUPABASE_SERVICE_ROLE_KEY !== 'dev_service_role_key') {
       await supabase
         .from('action_queue')
@@ -785,33 +1274,7 @@ app.get('/api/tasks', async (req: Request, res: Response) => {
     const { userId = 'usr_stark_01' } = req.query;
 
     if (SUPABASE_SERVICE_ROLE_KEY === 'dev_service_role_key') {
-      const defaultTasks = [
-        {
-          id: 'tsk_01',
-          title: 'Orbital satellite communication alignment',
-          description: 'Synchronize quantum communications relay with Stark Industries constellation.',
-          priority: 'high',
-          status: 'completed',
-          due_date: 'Today, 14:00',
-        },
-        {
-          id: 'tsk_02',
-          title: 'Compile flight dynamics report for Stark Industries Board',
-          description: 'Assemble thermal dispersion and Mach 3.4 cruise data.',
-          priority: 'critical',
-          status: 'in_progress',
-          due_date: 'Today, 16:00',
-        },
-        {
-          id: 'tsk_03',
-          title: 'Run quantum encryption salt refresh on server nodes',
-          description: 'Re-key cryptographic entropy on all secondary intelligence nodes.',
-          priority: 'medium',
-          status: 'pending',
-          due_date: 'Tomorrow, 09:00',
-        },
-      ];
-      res.json({ success: true, tasks: defaultTasks });
+      res.json({ success: true, tasks: localTasks });
       return;
     }
 
@@ -827,10 +1290,50 @@ app.get('/api/tasks', async (req: Request, res: Response) => {
   }
 });
 
+app.post('/api/tasks', async (req: Request, res: Response) => {
+  try {
+    const { userId = 'usr_stark_01', title, description, priority = 'medium', due_date = 'Today' } = req.body;
+    if (!title) {
+      res.status(400).json({ error: 'Task title is required' });
+      return;
+    }
+
+    const newTask = {
+      id: `tsk_${Date.now()}`,
+      title,
+      description: description || `Directive logged via JARVIS console`,
+      priority,
+      status: 'pending' as const,
+      due_date,
+    };
+    localTasks.unshift(newTask);
+
+    if (SUPABASE_SERVICE_ROLE_KEY !== 'dev_service_role_key') {
+      const { data, error } = await supabase
+        .from('tasks')
+        .insert([{ user_id: userId, title, description, priority, due_date, status: 'pending' }])
+        .select()
+        .single();
+      if (error) throw error;
+      res.json({ success: true, task: data });
+      return;
+    }
+
+    res.json({ success: true, task: newTask });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 app.patch('/api/tasks/:id', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const updates = req.body;
+
+    const found = localTasks.find((t) => t.id === id);
+    if (found) {
+      Object.assign(found, updates);
+    }
 
     if (SUPABASE_SERVICE_ROLE_KEY !== 'dev_service_role_key') {
       const { error } = await supabase
@@ -853,5 +1356,6 @@ server.listen(PORT, () => {
   console.log(`  Health Check: http://localhost:${PORT}/api/health`);
   console.log(`  Zero-Secret Enforced: Master API keys protected`);
   console.log(`  Active Gemini Model: ${GEMINI_MODEL}`);
+  console.log(`  Tools Enabled: [open_app, multi_window, email, reply, task, system]`);
   console.log(`========================================================`);
 });

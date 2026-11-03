@@ -1,12 +1,14 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Terminal, Send, Trash2, Sparkles, User, Bot } from 'lucide-react';
 import { ChatMessage } from '../../types/jarvis';
+import { ActionCard } from '../ActionCard';
 
 interface NeuralChatViewProps {
   messages: ChatMessage[];
   onSendMessage: (msg: string) => void;
   onClearLog: () => void;
   isThinking: boolean;
+  onNavigateTab?: (tab: string) => void;
 }
 
 export const NeuralChatView: React.FC<NeuralChatViewProps> = ({
@@ -14,6 +16,7 @@ export const NeuralChatView: React.FC<NeuralChatViewProps> = ({
   onSendMessage,
   onClearLog,
   isThinking,
+  onNavigateTab,
 }) => {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -30,10 +33,10 @@ export const NeuralChatView: React.FC<NeuralChatViewProps> = ({
   };
 
   const samplePrompts = [
-    'Run perimeter scan',
-    'Check power grid',
-    'Compile flight dynamics',
-    'Review high-risk actions',
+    'Open 3 windows: YouTube, GitHub, and Gmail',
+    'Write an email to alex@stark.com about Mark 85 test flight',
+    'Open Notepad and Calculator',
+    'Add task: Calibrate arc reactor core by Friday',
   ];
 
   return (
@@ -94,6 +97,14 @@ export const NeuralChatView: React.FC<NeuralChatViewProps> = ({
                     </span>
                   )}
                 </p>
+
+                {msg.actions && msg.actions.length > 0 && (
+                  <div className="pt-2 space-y-2.5 mt-2 border-t border-cyan-500/20">
+                    {msg.actions.map((act) => (
+                      <ActionCard key={act.id} action={act} onNavigateTab={onNavigateTab} />
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           );

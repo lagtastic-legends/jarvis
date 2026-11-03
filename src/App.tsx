@@ -12,6 +12,7 @@ import {
 import { audioSynth } from './services/audioSynth';
 import { speechEngine } from './services/speechEngine';
 import { api } from './services/api';
+import { actionExecutor } from './services/actionExecutor';
 
 import { HUDHeader } from './components/HUDHeader';
 import { Sidebar } from './components/Sidebar';
@@ -133,6 +134,28 @@ export const App: React.FC = () => {
     api.getTasks().then(setTasks).catch(console.warn);
     api.getActions().then(setActions).catch(console.warn);
 
+    // Register action executor callbacks for multi-window, email, messaging & system control
+    actionExecutor.registerCallbacks({
+      onSwitchTab: (tabId) => {
+        setActiveTab(tabId as TabId);
+        showToast(`Switched console to ${tabId.toUpperCase()}`);
+      },
+      onToggleVoice: (enabled) => {
+        setSpeechEnabled(enabled);
+        showToast(enabled ? 'Voice synthesis enabled' : 'Voice synthesis muted');
+      },
+      onClearChat: () => {
+        setMessages([]);
+        showToast('Neural chat console cleared');
+      },
+      onTasksUpdated: () => {
+        api.getTasks().then(setTasks).catch(console.warn);
+      },
+      onShowToast: (msg) => {
+        showToast(msg);
+      },
+    });
+
     // Register speech callbacks
     speechEngine.onStateChange((speaking, _word) => {
       setIsSpeaking(speaking);
@@ -225,14 +248,19 @@ export const App: React.FC = () => {
             speechEngine.speakStreamChunk(chunk);
           }
         },
-        (finalText, actionTriggered) => {
+        async (finalText, actionTriggered, clientActions = []) => {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantMsgId
-                ? { ...m, content: finalText, metadata: actionTriggered }
+                ? { ...m, content: finalText, metadata: actionTriggered, actions: clientActions }
                 : m
             )
           );
+
+          // Synchronously dispatch client actions (multi-window, email, messaging, system control)
+          if (clientActions && clientActions.length > 0) {
+            await actionExecutor.executeAll(clientActions);
+          }
 
           if (speechEnabled) {
             speechEngine.finishStream(() => {
@@ -441,6 +469,7 @@ export const App: React.FC = () => {
               onSendMessage={handleSendDirective}
               onClearLog={() => setMessages([])}
               isThinking={aiState === 'THINKING'}
+              onNavigateTab={(tab) => setActiveTab(tab as TabId)}
             />
           )}
 
