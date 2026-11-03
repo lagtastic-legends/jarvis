@@ -430,6 +430,36 @@ export class JarvisApiClient {
     }
   }
 
+  // Bixby File Open / Reveal in Folder
+  public async openLocalFile(filePath: string, revealInFolder: boolean = false): Promise<any> {
+    try {
+      const res = await fetch(`${API_BASE}/api/actions/open-file`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath, revealInFolder }),
+        signal: AbortSignal.timeout(5000),
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
+  // Bixby OS Settings Intent Trigger
+  public async openSettingUri(uri: string): Promise<any> {
+    try {
+      const res = await fetch(`${API_BASE}/api/actions/open-setting`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ uri }),
+        signal: AbortSignal.timeout(4000),
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, error: err.message };
+    }
+  }
+
   // Fetch Tasks
   public async getTasks(): Promise<TaskDirective[]> {
     const defaultTasks: TaskDirective[] = [

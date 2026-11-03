@@ -33,10 +33,12 @@ export const NeuralChatView: React.FC<NeuralChatViewProps> = ({
   };
 
   const samplePrompts = [
+    'Good night JARVIS, set alarm for 6 AM and turn on eye comfort',
+    'Look for my Aadhaar card',
+    'Stop annoying me with notifications from YouTube and Spotify',
+    'How are calls getting picked up when my phone is in my pocket?',
     'Open 3 windows: YouTube, GitHub, and Gmail',
     'Write an email to alex@stark.com about Mark 85 test flight',
-    'Open Notepad and Calculator',
-    'Add task: Calibrate arc reactor core by Friday',
   ];
 
   return (

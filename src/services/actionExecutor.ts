@@ -1,4 +1,5 @@
 import { ClientAction } from '../types/jarvis';
+import { api } from './api';
 
 export interface ActionExecutorCallbacks {
   onSwitchTab?: (tab: string) => void;
@@ -43,6 +44,18 @@ export class JarvisActionExecutor {
 
         case 'SYSTEM_CONTROL':
           return this.handleSystemControl(action.payload);
+
+        case 'MANAGE_APP_NOTIFICATIONS':
+          return this.handleManageAppNotifications(action.payload);
+
+        case 'FIND_LOCAL_FILE':
+          return this.handleFindLocalFile(action.payload);
+
+        case 'EXECUTE_DEVICE_ROUTINE':
+          return this.handleExecuteDeviceRoutine(action.payload);
+
+        case 'DIAGNOSE_AND_OPEN_SETTING':
+          return this.handleDiagnoseAndOpenSetting(action.payload);
 
         default:
           return { success: false, message: `Unknown action type: ${(action as any).type}` };
@@ -260,6 +273,170 @@ export class JarvisActionExecutor {
     }
 
     return { success: true, message: `System control: ${command}` };
+  }
+
+  // 7. MANAGE_APP_NOTIFICATIONS
+  public handleManageAppNotifications(payload: Record<string, any>): { success: boolean; message: string } {
+    const apps = Array.isArray(payload.apps) ? payload.apps : [];
+    const current = this.getStoredNotificationStates();
+
+    apps.forEach((app: any) => {
+      if (app.appName) {
+        current[app.appName.toLowerCase()] = Boolean(app.allowNotifications);
+      }
+    });
+
+    try {
+      localStorage.setItem('jarvis_app_notifications', JSON.stringify(current));
+      window.dispatchEvent(new CustomEvent('jarvis-notifications-change', { detail: current }));
+    } catch {
+      //
+    }
+
+    const appNames = apps.map((a: any) => a.appName).join(', ');
+    this.callbacks.onShowToast?.(`Updated notification preferences for ${appNames || 'apps'}`);
+    return { success: true, message: `Updated notifications for ${appNames}` };
+  }
+
+  public getStoredNotificationStates(): Record<string, boolean> {
+    try {
+      const raw = localStorage.getItem('jarvis_app_notifications');
+      return raw ? JSON.parse(raw) : { youtube: false, spotify: false, netflix: false };
+    } catch {
+      return { youtube: false, spotify: false, netflix: false };
+    }
+  }
+
+  public saveNotificationToggle(appName: string, allow: boolean) {
+    const current = this.getStoredNotificationStates();
+    current[appName.toLowerCase()] = allow;
+    try {
+      localStorage.setItem('jarvis_app_notifications', JSON.stringify(current));
+      window.dispatchEvent(new CustomEvent('jarvis-notifications-change', { detail: current }));
+    } catch {
+      //
+    }
+    this.callbacks.onShowToast?.(`${appName} notifications ${allow ? 'ALLOWED' : 'MUTED'}`);
+  }
+
+  // 8. FIND_LOCAL_FILE
+  public handleFindLocalFile(payload: Record<string, any>): { success: boolean; message: string } {
+    const files = Array.isArray(payload.files) ? payload.files : [];
+    this.callbacks.onShowToast?.(
+      files.length > 0
+        ? `Located ${files.length} files matching "${payload.query}"`
+        : `Searched local vault for "${payload.query}"`
+    );
+    return { success: true, message: `Located ${files.length} matches for "${payload.query}"` };
+  }
+
+  // 9. EXECUTE_DEVICE_ROUTINE
+  public handleExecuteDeviceRoutine(payload: Record<string, any>): { success: boolean; message: string } {
+    const { routineName, steps = {} } = payload;
+
+    // 1. Eye Comfort Warm Filter
+    if (steps.eyeComfortShield !== undefined) {
+      this.setEyeComfortShield(Boolean(steps.eyeComfortShield));
+    }
+
+    // 2. Hardware Brightness Dimmer Overlay
+    if (typeof steps.brightnessPercent === 'number') {
+      this.setScreenBrightness(steps.brightnessPercent);
+    }
+
+    // 3. Do Not Disturb Mode
+    if (steps.enableDnd !== undefined) {
+      this.setDndMode(Boolean(steps.enableDnd));
+    }
+
+    // 4. Alarm / Tasks Notification
+    if (steps.alarmTime) {
+      this.callbacks.onTasksUpdated?.();
+      if (this.isMobile()) {
+        try {
+          const match = steps.alarmTime.match(/(\d+):(\d+)\s*(AM|PM)?/i);
+          if (match) {
+            let hour = parseInt(match[1], 10);
+            const min = parseInt(match[2], 10);
+            const period = match[3]?.toUpperCase();
+            if (period === 'PM' && hour < 12) hour += 12;
+            if (period === 'AM' && hour === 12) hour = 0;
+            const intentUri = `intent:#Intent;action=android.intent.action.SET_ALARM;i.android.intent.extra.alarm.HOUR=${hour};i.android.intent.extra.alarm.MINUTES=${min};B.android.intent.extra.alarm.SKIP_UI=true;end`;
+            window.location.href = intentUri;
+          }
+        } catch {
+          //
+        }
+      }
+    }
+
+    this.callbacks.onShowToast?.(`Routine "${routineName || 'Device Macro'}" activated`);
+    return { success: true, message: `Routine executed: ${routineName}` };
+  }
+
+  public setEyeComfortShield(enable: boolean) {
+    if (typeof document === 'undefined') return;
+    let shieldEl = document.getElementById('jarvis-eye-comfort-overlay');
+    if (enable) {
+      if (!shieldEl) {
+        shieldEl = document.createElement('div');
+        shieldEl.id = 'jarvis-eye-comfort-overlay';
+        shieldEl.style.cssText =
+          'position:fixed;inset:0;pointer-events:none;z-index:99998;background:rgba(255,147,41,0.16);mix-blend-mode:multiply;transition:opacity 0.4s ease;';
+        document.body.appendChild(shieldEl);
+      }
+      shieldEl.style.opacity = '1';
+      document.documentElement.style.filter = 'sepia(24%) saturate(120%) hue-rotate(-10deg)';
+    } else {
+      if (shieldEl) shieldEl.style.opacity = '0';
+      document.documentElement.style.filter = 'none';
+    }
+  }
+
+  public setScreenBrightness(percent: number) {
+    if (typeof document === 'undefined') return;
+    const clamped = Math.max(5, Math.min(100, percent));
+    let dimmerEl = document.getElementById('jarvis-screen-dimmer-overlay');
+    if (!dimmerEl) {
+      dimmerEl = document.createElement('div');
+      dimmerEl.id = 'jarvis-screen-dimmer-overlay';
+      dimmerEl.style.cssText =
+        'position:fixed;inset:0;pointer-events:none;z-index:99997;background:#000000;transition:opacity 0.3s ease;';
+      document.body.appendChild(dimmerEl);
+    }
+    const opacity = ((100 - clamped) / 100) * 0.75;
+    dimmerEl.style.opacity = `${opacity}`;
+  }
+
+  public setDndMode(enable: boolean) {
+    try {
+      localStorage.setItem('jarvis_dnd_active', enable ? 'true' : 'false');
+      window.dispatchEvent(new CustomEvent('jarvis-dnd-change', { detail: enable }));
+    } catch {
+      //
+    }
+    this.callbacks.onShowToast?.(`Do Not Disturb ${enable ? 'ENGAGED' : 'DISENGAGED'}`);
+  }
+
+  // 10. DIAGNOSE_AND_OPEN_SETTING
+  public handleDiagnoseAndOpenSetting(payload: Record<string, any>): { success: boolean; message: string } {
+    const { diagnosedSettingName, windowsSettingsUri, androidIntentUri } = payload;
+    const isMobile = this.isMobile();
+
+    if (isMobile && androidIntentUri) {
+      const intentUrl = `intent:#Intent;action=${androidIntentUri};end`;
+      try {
+        window.location.href = intentUrl;
+      } catch {
+        //
+      }
+    } else if (windowsSettingsUri && typeof window !== 'undefined') {
+      // Trigger via API endpoint so backend launches ms-settings safely
+      api.openSettingUri(windowsSettingsUri).catch(console.warn);
+    }
+
+    this.callbacks.onShowToast?.(`Diagnosed setting: ${diagnosedSettingName || 'System Setting'}`);
+    return { success: true, message: `Opened setting for ${diagnosedSettingName}` };
   }
 }
 

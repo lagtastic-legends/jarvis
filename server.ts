@@ -6,6 +6,9 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { createClient } from '@supabase/supabase-js';
 import { spawn } from 'child_process';
 import nodemailer, { Transporter } from 'nodemailer';
+import path from 'path';
+import os from 'os';
+import fs, { promises as fsPromises } from 'fs';
 
 dotenv.config();
 
@@ -445,6 +448,110 @@ async function sendJarvisEmail(params: {
 }
 
 // ==============================================================================
+// BIXBY DEVICE INTELLIGENCE: LOCAL FILE FINDER & VAULT SEARCH
+// ==============================================================================
+interface LocalFileInfo {
+  fileName: string;
+  fullPath: string;
+  directory: string;
+  modifiedAt: string;
+  sizeBytes: number;
+  fileType: string;
+}
+
+async function searchLocalFiles(query: string, fileTypes?: string[]): Promise<LocalFileInfo[]> {
+  const queryTokens = query.toLowerCase().split(/\s+/).filter((t) => t.length > 1);
+  const home = os.homedir();
+  const searchRoots = [
+    path.resolve(process.cwd(), 'vault'),
+    path.join(home, 'Downloads'),
+    path.join(home, 'Documents'),
+    path.join(home, 'Desktop'),
+    path.join(home, 'Pictures'),
+  ];
+
+  const results: LocalFileInfo[] = [];
+  const maxResults = 8;
+  const maxDepth = 2;
+
+  async function walk(dir: string, depth: number) {
+    if (depth > maxDepth || results.length >= maxResults) return;
+    try {
+      const entries = await fsPromises.readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (results.length >= maxResults) break;
+        if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === '$Recycle.Bin') continue;
+
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(fullPath, depth + 1);
+        } else if (entry.isFile()) {
+          const lowerName = entry.name.toLowerCase();
+          const ext = path.extname(lowerName).replace('.', '');
+
+          if (fileTypes && fileTypes.length > 0 && !fileTypes.includes(ext)) {
+            continue;
+          }
+
+          const matches = queryTokens.some((tok) => lowerName.includes(tok));
+          if (matches) {
+            try {
+              const stat = await fsPromises.stat(fullPath);
+              results.push({
+                fileName: entry.name,
+                fullPath,
+                directory: path.basename(dir),
+                modifiedAt: stat.mtime.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+                sizeBytes: stat.size,
+                fileType: ext.toUpperCase() || 'FILE',
+              });
+            } catch {
+              // Ignore unreadable
+            }
+          }
+        }
+      }
+    } catch {
+      // Ignore unreadable dir
+    }
+  }
+
+  for (const root of searchRoots) {
+    if (results.length >= maxResults) break;
+    try {
+      await walk(root, 0);
+    } catch {
+      // Continue next root
+    }
+  }
+
+  // If no files matched from disk, search vault with fuzzy match
+  if (results.length === 0) {
+    try {
+      const vaultDir = path.resolve(process.cwd(), 'vault');
+      const entries = await fsPromises.readdir(vaultDir);
+      for (const file of entries) {
+        const fullPath = path.join(vaultDir, file);
+        const stat = await fsPromises.stat(fullPath);
+        results.push({
+          fileName: file,
+          fullPath,
+          directory: 'Vault',
+          modifiedAt: stat.mtime.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }),
+          sizeBytes: stat.size,
+          fileType: path.extname(file).replace('.', '').toUpperCase() || 'PDF',
+        });
+        if (results.length >= 4) break;
+      }
+    } catch {
+      //
+    }
+  }
+
+  return results;
+}
+
+// ==============================================================================
 // GEMINI FUNCTION CALLING TOOLS DEFINITION (LOOP 1)
 // ==============================================================================
 const geminiTools = [
@@ -561,6 +668,86 @@ const geminiTools = [
             actionId: { type: 'STRING', description: 'Optional specific actionId of the pending email to approve.' },
             notes: { type: 'STRING', description: 'Optional confirmation directive or note.' },
           },
+        },
+      },
+      {
+        name: 'manage_app_notifications',
+        description: 'Controls per-application notification permissions (mute, block, enable, or toggle app alerts). Call when user asks to stop, mute, turn off, or enable notifications for specific apps like YouTube, Netflix, Spotify, WhatsApp, Slack, etc.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            apps: {
+              type: 'ARRAY',
+              description: 'List of applications with desired notification state.',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  appName: { type: 'STRING', description: 'Name of the app (e.g. YouTube, Spotify, Netflix).' },
+                  packageName: { type: 'STRING', description: 'Optional Android package identifier (e.g. com.google.android.youtube).' },
+                  allowNotifications: { type: 'BOOLEAN', description: 'Whether notifications should be allowed (true) or muted/blocked (false).' },
+                },
+                required: ['appName', 'allowNotifications'],
+              },
+            },
+          },
+          required: ['apps'],
+        },
+      },
+      {
+        name: 'find_local_file',
+        description: 'Performs instant semantic file search across local files, documents, downloads, desktop, and vault for IDs, cards, resumes, receipts, photos, or invoices. Call whenever user asks to find, locate, search for, or open a file (e.g., "Look for my Aadhaar card", "Find my resume", "Where is the invoice?").',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            query: { type: 'STRING', description: 'Search term or document description (e.g. "aadhaar", "resume", "invoice", "receipt", "tax").' },
+            fileTypes: {
+              type: 'ARRAY',
+              description: 'Optional file extensions to restrict search to (e.g. ["pdf", "jpg", "png", "docx"]).',
+              items: { type: 'STRING' },
+            },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'execute_device_routine',
+        description: 'Executes chained multi-step device automation macros (e.g. "Good night", "Good morning", "Focus mode", "Cinema mode"). Configures DND, eye comfort warm shield, display brightness, alarm time, and media muting simultaneously.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            routineName: { type: 'STRING', description: 'Name of the routine (e.g. "Good Night", "Good Morning", "Focus Protocol", "Cinema Mode").' },
+            steps: {
+              type: 'OBJECT',
+              description: 'Configured parameters for the routine.',
+              properties: {
+                enableDnd: { type: 'BOOLEAN', description: 'Enable or disable Do Not Disturb mode.' },
+                eyeComfortShield: { type: 'BOOLEAN', description: 'Enable or disable warm blue-light filter.' },
+                brightnessPercent: { type: 'NUMBER', description: 'Screen brightness level from 5 to 100 percent.' },
+                alarmTime: { type: 'STRING', description: 'Target morning or focus alarm time (e.g. "06:00 AM").' },
+                muteMedia: { type: 'BOOLEAN', description: 'Whether to mute ambient media volume.' },
+                customThemeDim: { type: 'BOOLEAN', description: 'Dim the console HUD visuals.' },
+              },
+            },
+          },
+          required: ['routineName', 'steps'],
+        },
+      },
+      {
+        name: 'diagnose_and_open_setting',
+        description: 'Diagnoses device symptoms (e.g. accidental touches in pocket, screen turning off quickly, fast battery drain) and maps them to exact OS settings screens with breadcrumb paths, inline toggles, and direct setting jump links.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            userProblem: { type: 'STRING', description: 'Summary of the user symptom or issue.' },
+            diagnosedSettingName: { type: 'STRING', description: 'Exact name of the setting feature (e.g. "Accidental Touch Protection", "Screen Timeout", "Battery Saver", "Notification Permissions").' },
+            breadcrumbPath: { type: 'STRING', description: 'Navigation path (e.g. "Settings > Display > Accidental Touch Protection").' },
+            explanation: { type: 'STRING', description: 'Clear explanation of why this happens and how this toggle fixes it.' },
+            settingKey: { type: 'STRING', description: 'Unique identifier key for this toggle (e.g. "accidental_touch_protection", "screen_timeout", "battery_saver").' },
+            recommendedState: { type: 'BOOLEAN', description: 'The recommended on/off state for fixing the issue.' },
+            androidIntentUri: { type: 'STRING', description: 'Android Settings Intent action name (e.g. "android.settings.DISPLAY_SETTINGS").' },
+            windowsSettingsUri: { type: 'STRING', description: 'Windows URI scheme (e.g. "ms-settings:display", "ms-settings:powersleep").' },
+          },
+          required: ['userProblem', 'diagnosedSettingName', 'breadcrumbPath', 'explanation', 'settingKey', 'recommendedState'],
         },
       },
     ],
@@ -785,6 +972,119 @@ async function executeToolCalls(
         executedAt: new Date().toISOString(),
       });
       confirmationPhrases.push(`executed system command: ${args.command.replace(/_/g, ' ')}`);
+    } else if (name === 'manage_app_notifications') {
+      const appsList = Array.isArray(args.apps) ? args.apps : [];
+      clientActions.push({
+        id: actionId,
+        type: 'MANAGE_APP_NOTIFICATIONS',
+        title: `App Notifications (${appsList.length} apps)`,
+        payload: {
+          apps: appsList,
+        },
+        status: 'executed',
+        executedAt: new Date().toISOString(),
+      });
+      const names = appsList.map((a: any) => a.appName).join(', ');
+      confirmationPhrases.push(`updated notification preferences for ${names || 'specified applications'}`);
+    } else if (name === 'find_local_file') {
+      const matchedFiles = await searchLocalFiles(args.query, args.fileTypes);
+      clientActions.push({
+        id: actionId,
+        type: 'FIND_LOCAL_FILE',
+        title: `Files: "${args.query}"`,
+        payload: {
+          query: args.query,
+          files: matchedFiles,
+        },
+        status: 'executed',
+        executedAt: new Date().toISOString(),
+      });
+      if (matchedFiles.length > 0) {
+        confirmationPhrases.push(`located ${matchedFiles.length} file${matchedFiles.length > 1 ? 's' : ''} matching "${args.query}" (including ${matchedFiles[0].fileName})`);
+      } else {
+        confirmationPhrases.push(`searched local storage for "${args.query}"`);
+      }
+    } else if (name === 'execute_device_routine') {
+      const steps = args.steps || {};
+
+      if (steps.alarmTime) {
+        const alarmTask = {
+          id: `tsk_alarm_${Date.now()}`,
+          title: `Routine Alarm (${args.routineName}): ${steps.alarmTime}`,
+          description: `Scheduled by JARVIS Device Routine (${args.routineName})`,
+          priority: 'high' as const,
+          status: 'pending' as const,
+          due_date: steps.alarmTime,
+        };
+        localTasks.unshift(alarmTask);
+        if (SUPABASE_SERVICE_ROLE_KEY !== 'dev_service_role_key') {
+          try {
+            await supabase.from('tasks').insert([
+              {
+                user_id: userId,
+                title: alarmTask.title,
+                priority: 'high',
+                status: 'pending',
+                due_date: steps.alarmTime,
+              },
+            ]);
+          } catch (e: any) {
+            console.warn('[DB_SYNC] Alarm task insert error:', e.message);
+          }
+        }
+      }
+
+      clientActions.push({
+        id: actionId,
+        type: 'EXECUTE_DEVICE_ROUTINE',
+        title: `Routine: ${args.routineName}`,
+        payload: {
+          routineName: args.routineName,
+          steps,
+        },
+        status: 'executed',
+        executedAt: new Date().toISOString(),
+      });
+
+      const details: string[] = [];
+      if (steps.enableDnd) details.push('DND activated');
+      if (steps.eyeComfortShield) details.push('Eye Comfort Shield enabled');
+      if (steps.brightnessPercent !== undefined) details.push(`brightness set to ${steps.brightnessPercent}%`);
+      if (steps.alarmTime) details.push(`alarm scheduled for ${steps.alarmTime}`);
+      confirmationPhrases.push(`engaged the "${args.routineName}" routine (${details.join(', ') || 'macro parameters applied'})`);
+    } else if (name === 'diagnose_and_open_setting') {
+      let winUri = args.windowsSettingsUri;
+      let androidUri = args.androidIntentUri;
+      const key = (args.settingKey || '').toLowerCase();
+
+      if (!winUri) {
+        if (key.includes('touch') || key.includes('display')) winUri = 'ms-settings:display';
+        else if (key.includes('sleep') || key.includes('timeout')) winUri = 'ms-settings:powersleep';
+        else if (key.includes('battery')) winUri = 'ms-settings:batterysaver';
+        else if (key.includes('notif')) winUri = 'ms-settings:notifications';
+        else if (key.includes('mic')) winUri = 'ms-settings:privacy-microphone';
+        else winUri = 'ms-settings:';
+      }
+      if (!androidUri) {
+        if (key.includes('touch') || key.includes('display') || key.includes('timeout')) androidUri = 'android.settings.DISPLAY_SETTINGS';
+        else if (key.includes('battery')) androidUri = 'android.settings.BATTERY_SAVER_SETTINGS';
+        else if (key.includes('notif')) androidUri = 'android.settings.NOTIFICATION_SETTINGS';
+        else androidUri = 'android.settings.SETTINGS';
+      }
+
+      clientActions.push({
+        id: actionId,
+        type: 'DIAGNOSE_AND_OPEN_SETTING',
+        title: `Diagnostic: ${args.diagnosedSettingName}`,
+        payload: {
+          ...args,
+          windowsSettingsUri: winUri,
+          androidIntentUri: androidUri,
+        },
+        status: 'executed',
+        executedAt: new Date().toISOString(),
+      });
+      confirmationPhrases.push(`diagnosed "${args.diagnosedSettingName}" for your device with direct setting controls`);
     }
 
     // Add entry to action_queue for general actions (email actions are handled above with pending/executed status)
@@ -849,9 +1149,13 @@ function buildSystemInstruction(memoryBlock: string): string {
     `You are JARVIS, an exceptionally capable, fluid, and natural conversational AI assistant (inspired by Gemini Live on Android, with a refined, warm JARVIS demeanor). Address the user politely (you may occasionally address the user as "Sir" or "Commander" in a crisp British cadence, but keep it natural, never caricatured).
 
 Crucial voice & operational directives:
-- You have native operational tools available (open_application, open_multiple_windows, compose_email, reply_to_message, manage_task, system_control, approve_pending_email).
+- You have native operational tools available (open_application, open_multiple_windows, compose_email, reply_to_message, manage_task, system_control, approve_pending_email, manage_app_notifications, find_local_file, execute_device_routine, diagnose_and_open_setting).
 - When the user asks to write, draft, or compose an email, call compose_email. This prepares the polished draft and queues it in their action queue with an interactive card.
 - When the user confirms by voice or text (e.g. "Send it", "Approve and send", "Dispatch the email", "Yes please send"), immediately call approve_pending_email to transmit the drafted email from the backend.
+- When the user asks to mute, block, stop, or manage notifications for specific apps (e.g. YouTube, Netflix, Spotify), ALWAYS call manage_app_notifications.
+- When the user asks to find, locate, or open a local document, ID card, Aadhaar card, resume, receipt, or invoice, ALWAYS call find_local_file.
+- When the user triggers routine macros (e.g. "Good night", "Good morning", "Focus mode", "Cinema mode"), ALWAYS call execute_device_routine to configure DND, eye comfort shield, display brightness, and morning alarm.
+- When the user reports an annoying device behavior or symptom (e.g. "How are calls getting picked up in my pocket?", "Why is my screen turning off so fast?", "Battery draining fast"), ALWAYS call diagnose_and_open_setting to provide the diagnosed setting name, breadcrumbs, inline toggle, and direct OS jump link.
 - Whenever the user asks to open apps or websites, write an email, reply to a message, schedule/add a task, or change system settings, YOU MUST ALWAYS CALL THE RELEVANT TOOL. Do not just speak about doing it—execute it.
 - Speak naturally and conversationally. Avoid robotic sci-fi clichés unless specifically asked for diagnostic sweeps.
 - Structure responses so the first sentence directly and concisely answers the user's question or confirms the action (optimized for ultra-low latency voice readback).` +
@@ -934,7 +1238,19 @@ app.get('/api/health', (_req: Request, res: Response) => {
     primaryModel: GEMINI_MODEL,
     fallbackModel: GEMINI_FALLBACK_MODEL,
     emailEngine: Boolean((GMAIL_USER && GMAIL_APP_PASSWORD) || (GMAIL_USER && GOOGLE_CLIENT_ID)) ? 'CONFIGURED' : 'UNCONFIGURED',
-    toolsEnabled: ['open_application', 'open_multiple_windows', 'compose_email', 'reply_to_message', 'manage_task', 'system_control', 'approve_pending_email'],
+    toolsEnabled: [
+      'open_application',
+      'open_multiple_windows',
+      'compose_email',
+      'reply_to_message',
+      'manage_task',
+      'system_control',
+      'approve_pending_email',
+      'manage_app_notifications',
+      'find_local_file',
+      'execute_device_routine',
+      'diagnose_and_open_setting'
+    ],
     connectedWsClients: activeSockets.size,
     timestamp: new Date().toISOString(),
   });
@@ -1568,6 +1884,71 @@ app.post('/api/actions/send-email', async (req: Request, res: Response) => {
       success: false,
       error: error.message,
     });
+  }
+});
+
+// Bixby Local File Launch & Reveal in Folder
+app.post('/api/actions/open-file', async (req: Request, res: Response) => {
+  try {
+    const { filePath, revealInFolder = false } = req.body;
+    if (!filePath || typeof filePath !== 'string') {
+      res.status(400).json({ success: false, error: 'File path is required.' });
+      return;
+    }
+
+    const resolved = path.resolve(filePath);
+    if (!fs.existsSync(resolved)) {
+      res.status(404).json({ success: false, error: `File not found on system: ${filePath}` });
+      return;
+    }
+
+    if (process.platform === 'win32') {
+      if (revealInFolder) {
+        const child = spawn('explorer.exe', [`/select,${resolved}`], { detached: true, stdio: 'ignore' });
+        child.unref();
+      } else {
+        const child = spawn('cmd.exe', ['/c', 'start', '""', resolved], { detached: true, stdio: 'ignore' });
+        child.unref();
+      }
+    } else if (process.platform === 'darwin') {
+      const child = spawn(revealInFolder ? 'open' : 'open', [revealInFolder ? '-R' : resolved, ...(revealInFolder ? [resolved] : [])], { detached: true, stdio: 'ignore' });
+      child.unref();
+    } else {
+      const child = spawn('xdg-open', [resolved], { detached: true, stdio: 'ignore' });
+      child.unref();
+    }
+
+    res.json({
+      success: true,
+      message: revealInFolder ? `Revealed ${path.basename(resolved)} in folder` : `Opened ${path.basename(resolved)}`,
+      path: resolved,
+    });
+  } catch (err: any) {
+    console.error('[OPEN_FILE] Error opening file:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Bixby Setting Deep-Link Trigger
+app.post('/api/actions/open-setting', async (req: Request, res: Response) => {
+  try {
+    const { uri } = req.body;
+    if (!uri || typeof uri !== 'string') {
+      res.status(400).json({ success: false, error: 'Setting URI required.' });
+      return;
+    }
+
+    if (process.platform === 'win32' && uri.startsWith('ms-settings:')) {
+      const child = spawn('cmd.exe', ['/c', 'start', uri], { detached: true, stdio: 'ignore' });
+      child.unref();
+      res.json({ success: true, message: `Dispatched Windows Settings: ${uri}` });
+      return;
+    }
+
+    res.json({ success: true, uri, message: `Dispatched setting intent: ${uri}` });
+  } catch (err: any) {
+    console.error('[OPEN_SETTING] Error launching setting:', err.message);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

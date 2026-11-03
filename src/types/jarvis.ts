@@ -38,7 +38,11 @@ export type ClientActionType =
   | 'COMPOSE_EMAIL'
   | 'REPLY_TO_MESSAGE'
   | 'MANAGE_TASK'
-  | 'SYSTEM_CONTROL';
+  | 'SYSTEM_CONTROL'
+  | 'MANAGE_APP_NOTIFICATIONS'
+  | 'FIND_LOCAL_FILE'
+  | 'EXECUTE_DEVICE_ROUTINE'
+  | 'DIAGNOSE_AND_OPEN_SETTING';
 
 export interface ClientAction {
   id: string;

@@ -40,6 +40,13 @@ export const HUDHeader: React.FC<HUDHeaderProps> = ({
 }) => {
   const [timeStr, setTimeStr] = useState<string>('');
   const [dateStr, setDateStr] = useState<string>('');
+  const [dndActive, setDndActive] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem('jarvis_dnd_active') === 'true';
+    } catch {
+      return false;
+    }
+  });
 
   useEffect(() => {
     const updateTime = () => {
@@ -49,7 +56,16 @@ export const HUDHeader: React.FC<HUDHeaderProps> = ({
     };
     updateTime();
     const interval = setInterval(updateTime, 1000);
-    return () => clearInterval(interval);
+
+    const handleDndChange = (e: any) => {
+      setDndActive(Boolean(e.detail));
+    };
+    window.addEventListener('jarvis-dnd-change', handleDndChange);
+
+    return () => {
+      clearInterval(interval);
+      window.removeEventListener('jarvis-dnd-change', handleDndChange);
+    };
   }, []);
 
   const states: JarvisState[] = ['IDLE', 'LISTENING', 'THINKING', 'SPEAKING'];
@@ -83,6 +99,14 @@ export const HUDHeader: React.FC<HUDHeaderProps> = ({
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
           <span>DEFCON 5 // SECURE</span>
         </div>
+
+        {/* Bixby Routine DND Pill */}
+        {dndActive && (
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-purple-500/50 bg-purple-950/40 text-purple-300 text-[11px] font-mono shadow-[0_0_12px_rgba(168,85,247,0.3)] animate-pulse">
+            <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
+            <span>DND ACTIVE</span>
+          </div>
+        )}
       </div>
 
       {/* Center: Dynamic AI State Machine Pills */}

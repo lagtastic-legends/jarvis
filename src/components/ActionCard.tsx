@@ -15,7 +15,18 @@ import {
   AlertTriangle,
   XCircle,
   Loader2,
-  Zap
+  Zap,
+  Bell,
+  BellOff,
+  FileText,
+  FolderOpen,
+  Moon,
+  Sun,
+  Eye,
+  AlarmClock,
+  VolumeX,
+  Wrench,
+  Settings
 } from 'lucide-react';
 import { ClientAction } from '../types/jarvis';
 import { actionExecutor } from '../services/actionExecutor';
@@ -555,5 +566,419 @@ export const ActionCard: React.FC<ActionCardProps> = ({ action, onNavigateTab })
     );
   }
 
+  // 7. MANAGE_APP_NOTIFICATIONS CARD (Bixby-Grade Inline Toggles)
+  if (action.type === 'MANAGE_APP_NOTIFICATIONS') {
+    return <AppNotificationsCardView payload={action.payload} />;
+  }
+
+  // 8. FIND_LOCAL_FILE CARD (Instant Semantic Local File Finder)
+  if (action.type === 'FIND_LOCAL_FILE') {
+    return <LocalFileCardView payload={action.payload} />;
+  }
+
+  // 9. EXECUTE_DEVICE_ROUTINE CARD (Chained Macro Routine Execution)
+  if (action.type === 'EXECUTE_DEVICE_ROUTINE') {
+    return <RoutineExecutionCardView payload={action.payload} />;
+  }
+
+  // 10. DIAGNOSE_AND_OPEN_SETTING CARD (Symptom-to-Setting Troubleshooter)
+  if (action.type === 'DIAGNOSE_AND_OPEN_SETTING') {
+    return <DiagnosticSettingCardView payload={action.payload} />;
+  }
+
   return null;
+};
+
+// ==============================================================================
+// BIXBY SUBCOMPONENTS
+// ==============================================================================
+
+// 1. App Notifications Card with Live Inline Toggles
+const AppNotificationsCardView: React.FC<{ payload: Record<string, any> }> = ({ payload }) => {
+  const rawApps = Array.isArray(payload?.apps) ? payload.apps : [];
+  const [appStates, setAppStates] = useState<Record<string, boolean>>(() => {
+    const initial: Record<string, boolean> = {};
+    rawApps.forEach((a: any) => {
+      initial[a.appName] = Boolean(a.allowNotifications);
+    });
+    return initial;
+  });
+
+  const handleToggleApp = (appName: string) => {
+    const next = !appStates[appName];
+    setAppStates((prev) => ({ ...prev, [appName]: next }));
+    actionExecutor.saveNotificationToggle(appName, next);
+    audioSynth.playChirp();
+  };
+
+  const handleOpenAndroidSettings = () => {
+    if (actionExecutor.isMobile()) {
+      window.location.href = 'intent:#Intent;action=android.settings.ALL_APPS_NOTIFICATION_SETTINGS;end';
+    } else {
+      api.openSettingUri('ms-settings:notifications');
+    }
+    audioSynth.playChirp();
+  };
+
+  return (
+    <div className="mt-2.5 rounded-xl border border-cyan-500/40 bg-jarvis-space/90 p-4 space-y-3 shadow-glow-cyan text-xs font-mono">
+      <div className="flex items-center justify-between pb-2 border-b border-cyan-500/20">
+        <div className="flex items-center gap-2 text-slate-100 font-bold">
+          <Bell className="w-4 h-4 text-cyan-400" />
+          <span>APP NOTIFICATIONS // INLINE TOGGLES</span>
+        </div>
+        <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-950/70 border border-cyan-500/30 text-cyan-300">
+          BIXBY CONTROL
+        </span>
+      </div>
+
+      <p className="text-[11px] text-slate-300">
+        Notification status updated. Flip inline toggle switches below to customize individual app permissions:
+      </p>
+
+      <div className="space-y-2">
+        {rawApps.map((app: any, idx: number) => {
+          const isAllowed = appStates[app.appName] ?? Boolean(app.allowNotifications);
+          return (
+            <div
+              key={idx}
+              className="flex items-center justify-between p-2.5 rounded-lg border border-cyan-500/20 bg-black/40"
+            >
+              <div className="flex items-center gap-2.5">
+                <div className={`p-1.5 rounded-md ${isAllowed ? 'bg-cyan-500/20 text-cyan-300' : 'bg-red-500/20 text-red-300'}`}>
+                  {isAllowed ? <Bell className="w-3.5 h-3.5" /> : <BellOff className="w-3.5 h-3.5" />}
+                </div>
+                <div>
+                  <span className="font-bold text-slate-100">{app.appName}</span>
+                  <p className="text-[10px] text-slate-400">
+                    {isAllowed ? 'Notifications allowed' : 'Notifications muted'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Animated Switch Button */}
+              <button
+                type="button"
+                onClick={() => handleToggleApp(app.appName)}
+                className={`w-12 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors duration-300 ${
+                  isAllowed ? 'bg-cyan-500 justify-end' : 'bg-slate-700 justify-start'
+                }`}
+                title={`Toggle notifications for ${app.appName}`}
+              >
+                <div className="bg-black w-4 h-4 rounded-full shadow-md transform transition-transform" />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="pt-1 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={handleOpenAndroidSettings}
+          className="px-3 py-1.5 rounded-lg border border-cyan-500/40 bg-cyan-950/40 hover:bg-cyan-500/20 text-cyan-300 font-bold flex items-center gap-1.5 transition-all text-[11px]"
+        >
+          <Settings className="w-3.5 h-3.5" />
+          <span>Open Device Notification Settings</span>
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// 2. Instant Local File Result Card
+const LocalFileCardView: React.FC<{ payload: Record<string, any> }> = ({ payload }) => {
+  const query = payload?.query || 'Document';
+  const files = Array.isArray(payload?.files) ? payload.files : [];
+
+  const handleOpenFile = (filePath: string) => {
+    api.openLocalFile(filePath, false);
+    audioSynth.playChirp();
+  };
+
+  const handleRevealInFolder = (filePath: string) => {
+    api.openLocalFile(filePath, true);
+    audioSynth.playChirp();
+  };
+
+  return (
+    <div className="mt-2.5 rounded-xl border border-cyan-500/40 bg-jarvis-space/90 p-4 space-y-3 shadow-glow-cyan text-xs font-mono">
+      <div className="flex items-center justify-between pb-2 border-b border-cyan-500/20">
+        <div className="flex items-center gap-2 text-slate-100 font-bold">
+          <FileText className="w-4 h-4 text-cyan-400" />
+          <span>LOCAL FILE FINDER // "{query.toUpperCase()}"</span>
+        </div>
+        <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-950/60 border border-emerald-500/40 text-emerald-300 flex items-center gap-1">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          {files.length} MATCHES LOCATED
+        </span>
+      </div>
+
+      {files.length === 0 ? (
+        <div className="p-3 rounded-lg border border-cyan-500/20 bg-black/40 text-slate-400 text-center">
+          No matching local documents found for "{query}". Indexing safe vaults...
+        </div>
+      ) : (
+        <div className="space-y-2">
+          {files.map((f: any, idx: number) => (
+            <div
+              key={idx}
+              className="p-3 rounded-lg border border-cyan-500/20 bg-black/50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-cyan-400/50 transition-colors"
+            >
+              <div className="flex items-start gap-2.5 truncate">
+                <div className="p-2 rounded-lg bg-cyan-500/20 text-cyan-300 flex-shrink-0 font-bold text-[10px] uppercase border border-cyan-400/30">
+                  {f.fileType || 'PDF'}
+                </div>
+                <div className="truncate">
+                  <p className="font-bold text-slate-100 truncate">{f.fileName}</p>
+                  <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5">
+                    <span className="px-1.5 py-0.2 rounded bg-slate-800 text-cyan-300 font-mono">
+                      {f.directory || 'My Files'}
+                    </span>
+                    <span>Modified: {f.modifiedAt || 'Recent'}</span>
+                    {f.sizeBytes && <span>&bull; {(f.sizeBytes / 1024).toFixed(1)} KB</span>}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  type="button"
+                  onClick={() => handleOpenFile(f.fullPath)}
+                  className="px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-black font-bold flex items-center gap-1.5 transition-all text-[11px]"
+                  title="Open document in default system viewer"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  <span>Open</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleRevealInFolder(f.fullPath)}
+                  className="p-1.5 rounded-lg border border-cyan-500/30 hover:bg-cyan-500/20 text-cyan-300 transition-colors"
+                  title="Show file location in File Explorer / Finder"
+                >
+                  <FolderOpen className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// 3. Chained Routine Execution Card
+const RoutineExecutionCardView: React.FC<{ payload: Record<string, any> }> = ({ payload }) => {
+  const routineName = payload?.routineName || 'Device Routine';
+  const initialSteps = payload?.steps || {};
+
+  const [dndActive, setDndActive] = useState<boolean>(Boolean(initialSteps.enableDnd));
+  const [eyeComfort, setEyeComfort] = useState<boolean>(Boolean(initialSteps.eyeComfortShield));
+  const [brightness, setBrightness] = useState<number>(initialSteps.brightnessPercent ?? 10);
+  const [alarmActive, setAlarmActive] = useState<boolean>(Boolean(initialSteps.alarmTime));
+
+  const handleToggleDnd = () => {
+    const next = !dndActive;
+    setDndActive(next);
+    actionExecutor.setDndMode(next);
+    audioSynth.playChirp();
+  };
+
+  const handleToggleEyeComfort = () => {
+    const next = !eyeComfort;
+    setEyeComfort(next);
+    actionExecutor.setEyeComfortShield(next);
+    audioSynth.playChirp();
+  };
+
+  const handleBrightnessChange = (val: number) => {
+    setBrightness(val);
+    actionExecutor.setScreenBrightness(val);
+  };
+
+  return (
+    <div className="mt-2.5 rounded-xl border border-cyan-500/40 bg-jarvis-space/90 p-4 space-y-3.5 shadow-glow-cyan text-xs font-mono">
+      <div className="flex items-center justify-between pb-2 border-b border-cyan-500/20">
+        <div className="flex items-center gap-2 text-slate-100 font-bold">
+          <Moon className="w-4 h-4 text-cyan-400" />
+          <span className="uppercase">ROUTINE EXECUTED // {routineName}</span>
+        </div>
+        <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-emerald-950/80 border border-emerald-400/60 text-emerald-300 font-bold flex items-center gap-1.5 shadow-[0_0_10px_rgba(16,185,129,0.2)]">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          CHAINED MACRO ACTIVE
+        </span>
+      </div>
+
+      <p className="text-[11px] text-slate-300">
+        Chained macro parameters applied. Fine-tune real-time hardware overrides below:
+      </p>
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+        {/* Step 1: DND Toggle */}
+        <div className="p-3 rounded-lg border border-cyan-500/20 bg-black/40 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <VolumeX className="w-4 h-4 text-cyan-400" />
+            <div>
+              <p className="font-bold text-slate-100">Do Not Disturb</p>
+              <p className="text-[10px] text-slate-400">{dndActive ? 'Silenced' : 'Alerts allowed'}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleToggleDnd}
+            className={`w-11 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors ${
+              dndActive ? 'bg-cyan-500 justify-end' : 'bg-slate-700 justify-start'
+            }`}
+          >
+            <div className="bg-black w-4 h-4 rounded-full shadow-md" />
+          </button>
+        </div>
+
+        {/* Step 2: Eye Comfort Toggle */}
+        <div className="p-3 rounded-lg border border-cyan-500/20 bg-black/40 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Eye className="w-4 h-4 text-amber-400" />
+            <div>
+              <p className="font-bold text-slate-100">Eye Comfort Shield</p>
+              <p className="text-[10px] text-slate-400">{eyeComfort ? 'Warm 28% Active' : 'Off'}</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleToggleEyeComfort}
+            className={`w-11 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors ${
+              eyeComfort ? 'bg-amber-500 justify-end' : 'bg-slate-700 justify-start'
+            }`}
+          >
+            <div className="bg-black w-4 h-4 rounded-full shadow-md" />
+          </button>
+        </div>
+
+        {/* Step 3: Brightness Slider */}
+        <div className="p-3 rounded-lg border border-cyan-500/20 bg-black/40 space-y-1.5 sm:col-span-2">
+          <div className="flex items-center justify-between">
+            <span className="flex items-center gap-2 text-slate-200 font-bold">
+              <Sun className="w-4 h-4 text-cyan-400" />
+              Display Brightness Dimmer:
+            </span>
+            <span className="font-mono text-cyan-300 font-bold">{brightness}%</span>
+          </div>
+          <input
+            type="range"
+            min={5}
+            max={100}
+            value={brightness}
+            onChange={(e) => handleBrightnessChange(parseInt(e.target.value, 10))}
+            className="w-full accent-cyan-400 h-1.5 bg-slate-700 rounded-lg cursor-pointer"
+          />
+        </div>
+
+        {/* Step 4: Morning Alarm */}
+        {initialSteps.alarmTime && (
+          <div className="p-3 rounded-lg border border-cyan-500/20 bg-black/40 flex items-center justify-between sm:col-span-2">
+            <div className="flex items-center gap-2">
+              <AlarmClock className={`w-4 h-4 ${alarmActive ? 'text-emerald-400' : 'text-slate-500'}`} />
+              <div>
+                <p className="font-bold text-slate-100">Scheduled Alarm</p>
+                <p className="text-[10px] text-slate-400">Target Time: {initialSteps.alarmTime}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setAlarmActive(!alarmActive);
+                audioSynth.playChirp();
+              }}
+              className={`px-3 py-1 rounded-lg border text-[10px] font-bold transition-all ${
+                alarmActive
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/40 shadow-[0_0_8px_rgba(16,185,129,0.3)]'
+                  : 'bg-slate-800 text-slate-400 border-slate-700'
+              }`}
+            >
+              {alarmActive ? 'ACTIVE IN MATRIX' : 'MUTED'}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+// 4. Symptom-to-Setting Diagnostic Card
+const DiagnosticSettingCardView: React.FC<{ payload: Record<string, any> }> = ({ payload }) => {
+  const {
+    diagnosedSettingName = 'Setting',
+    breadcrumbPath = 'Settings > Display',
+    explanation = '',
+    recommendedState = true,
+    windowsSettingsUri = 'ms-settings:display',
+    androidIntentUri = 'android.settings.DISPLAY_SETTINGS',
+  } = payload || {};
+
+  const [toggleState, setToggleState] = useState<boolean>(recommendedState);
+
+  const handleJumpToSetting = () => {
+    actionExecutor.handleDiagnoseAndOpenSetting(payload);
+    audioSynth.playChirp();
+  };
+
+  return (
+    <div className="mt-2.5 rounded-xl border border-cyan-500/40 bg-jarvis-space/90 p-4 space-y-3 shadow-glow-cyan text-xs font-mono">
+      <div className="flex items-center justify-between pb-2 border-b border-cyan-500/20">
+        <div className="flex items-center gap-2 text-slate-100 font-bold">
+          <Wrench className="w-4 h-4 text-cyan-400" />
+          <span>SETTING DIAGNOSTIC // {diagnosedSettingName.toUpperCase()}</span>
+        </div>
+        <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-950/70 border border-cyan-500/30 text-cyan-300">
+          AUTO-DIAGNOSED
+        </span>
+      </div>
+
+      {/* Breadcrumb Navigation Pill */}
+      <div className="flex items-center gap-1.5 p-2 rounded-lg bg-black/50 border border-cyan-500/20 text-cyan-300 text-[11px]">
+        <span className="text-slate-500">PATH:</span>
+        <span className="font-bold">{breadcrumbPath}</span>
+      </div>
+
+      {/* Diagnostic Explanation */}
+      <p className="text-[11px] text-slate-300 leading-relaxed">
+        {explanation}
+      </p>
+
+      {/* Inline Toggle for this exact setting */}
+      <div className="p-3 rounded-lg border border-cyan-500/20 bg-black/40 flex items-center justify-between">
+        <div>
+          <p className="font-bold text-slate-100">{diagnosedSettingName}</p>
+          <p className="text-[10px] text-slate-400">
+            State: {toggleState ? 'ENABLED (Recommended)' : 'DISABLED'}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => setToggleState(!toggleState)}
+          className={`w-12 h-6 flex items-center rounded-full p-1 cursor-pointer transition-colors ${
+            toggleState ? 'bg-cyan-500 justify-end' : 'bg-slate-700 justify-start'
+          }`}
+        >
+          <div className="bg-black w-4 h-4 rounded-full shadow-md" />
+        </button>
+      </div>
+
+      {/* 1-Tap Jump to Exact Setting */}
+      <div className="pt-1 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={handleJumpToSetting}
+          className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black font-bold flex items-center gap-2 shadow-glow-cyan transition-all text-xs"
+        >
+          <ExternalLink className="w-3.5 h-3.5" />
+          <span>Jump to Exact Setting</span>
+        </button>
+        <span className="text-[10px] text-slate-500 font-mono">
+          URI: {windowsSettingsUri || androidIntentUri}
+        </span>
+      </div>
+    </div>
+  );
 };
