@@ -18,6 +18,8 @@ export type TabId =
   | 'coding' 
   | 'settings';
 
+export type ThemeMode = 'holographic' | 'obsidian';
+
 export interface TelemetryData {
   neuralFlux: string;
   thermalDispersion: string;

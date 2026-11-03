@@ -149,20 +149,47 @@ export const HolographicOrb: React.FC<HolographicOrbProps> = ({
       const rect = container.getBoundingClientRect();
       const x = (e.clientX - rect.left - rect.width / 2) / (rect.width / 2);
       const y = (e.clientY - rect.top - rect.height / 2) / (rect.height / 2);
-      stateObj.mouseX = x;
-      stateObj.mouseY = y;
+      stateObj.mouseX = Math.max(-1, Math.min(1, x));
+      stateObj.mouseY = Math.max(-1, Math.min(1, y));
     };
     container.addEventListener('mousemove', handleMouseMove);
+
+    const handleTouchMove = (e: TouchEvent) => {
+      if (e.touches.length > 0) {
+        const touch = e.touches[0];
+        const rect = container.getBoundingClientRect();
+        const x = (touch.clientX - rect.left - rect.width / 2) / (rect.width / 2);
+        const y = (touch.clientY - rect.top - rect.height / 2) / (rect.height / 2);
+        stateObj.mouseX = Math.max(-1, Math.min(1, x));
+        stateObj.mouseY = Math.max(-1, Math.min(1, y));
+      }
+    };
+    container.addEventListener('touchmove', handleTouchMove, { passive: true });
+
+    // Handle container resize dynamically
+    const resizeObserver = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width: newW, height: newH } = entry.contentRect;
+        if (newW > 0 && newH > 0) {
+          camera.aspect = newW / newH;
+          camera.updateProjectionMatrix();
+          renderer.setSize(newW, newH);
+        }
+      }
+    });
+    resizeObserver.observe(container);
+
+    const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
     // Render loop
     let clock = 0;
     const animate = () => {
-      clock += 0.015;
+      clock += prefersReducedMotion ? 0.005 : 0.015;
       stateObj.animId = requestAnimationFrame(animate);
 
       // Base rotation
-      particles.rotation.y += 0.003;
-      particles.rotation.x += 0.001;
+      particles.rotation.y += prefersReducedMotion ? 0.001 : 0.003;
+      particles.rotation.x += prefersReducedMotion ? 0.0005 : 0.001;
 
       // Mouse parallax smooth lerp
       particles.rotation.y += (stateObj.mouseX * 0.4 - particles.rotation.y) * 0.05;
@@ -203,6 +230,8 @@ export const HolographicOrb: React.FC<HolographicOrbProps> = ({
     return () => {
       cancelAnimationFrame(stateObj.animId);
       container.removeEventListener('mousemove', handleMouseMove);
+      container.removeEventListener('touchmove', handleTouchMove);
+      resizeObserver.disconnect();
       if (renderer.domElement.parentNode) {
         renderer.domElement.parentNode.removeChild(renderer.domElement);
       }
@@ -261,35 +290,48 @@ export const HolographicOrb: React.FC<HolographicOrbProps> = ({
       {/* Orbiting Concentric Rings Container */}
       <div 
         onClick={onOrbClick}
-        className="relative w-64 h-64 sm:w-72 sm:h-72 flex items-center justify-center cursor-pointer group"
+        role="button"
+        tabIndex={0}
+        aria-label={`JARVIS Holographic Core Orb. State: ${state}. Click to toggle listening mode.`}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onOrbClick?.();
+          }
+        }}
+        className="relative w-64 h-64 sm:w-72 sm:h-72 flex items-center justify-center cursor-pointer group focus:outline-none focus:ring-2 focus:ring-cyan-400/50 rounded-full"
       >
         {/* Outermost Celestial Orbital Ring */}
-        <div className="absolute inset-0 rounded-full border border-cyan-500/20 pointer-events-none scale-105" />
+        <div aria-hidden="true" className="absolute inset-0 rounded-full border border-cyan-500/20 pointer-events-none scale-105" />
 
         {/* Segmented Ring 1 (Clockwise) */}
-        <div className="absolute inset-2 rounded-full border-2 border-dashed border-cyan-400/30 animate-spin-slow pointer-events-none" />
+        <div aria-hidden="true" className="absolute inset-2 rounded-full border-2 border-dashed border-cyan-400/30 animate-spin-slow pointer-events-none" />
 
         {/* Segmented Ring 2 (Counter-Clockwise) with Degree Ticks */}
-        <div className="absolute inset-6 rounded-full border border-cyan-400/40 border-t-cyan-300 border-r-transparent border-b-cyan-400/40 border-l-transparent animate-spin-reverse pointer-events-none" />
+        <div aria-hidden="true" className="absolute inset-6 rounded-full border border-cyan-400/40 border-t-cyan-300 border-r-transparent border-b-cyan-400/40 border-l-transparent animate-spin-reverse pointer-events-none" />
 
         {/* Degree Markings */}
-        <span className="absolute top-1 text-[9px] font-mono text-cyan-400/60 pointer-events-none">000°</span>
-        <span className="absolute bottom-1 text-[9px] font-mono text-cyan-400/60 pointer-events-none">180°</span>
-        <span className="absolute left-1 text-[9px] font-mono text-cyan-400/60 pointer-events-none">270°</span>
-        <span className="absolute right-1 text-[9px] font-mono text-cyan-400/60 pointer-events-none">090°</span>
+        <span aria-hidden="true" className="absolute top-1 text-[9px] font-mono text-cyan-400/60 pointer-events-none">000°</span>
+        <span aria-hidden="true" className="absolute bottom-1 text-[9px] font-mono text-cyan-400/60 pointer-events-none">180°</span>
+        <span aria-hidden="true" className="absolute left-1 text-[9px] font-mono text-cyan-400/60 pointer-events-none">270°</span>
+        <span aria-hidden="true" className="absolute right-1 text-[9px] font-mono text-cyan-400/60 pointer-events-none">090°</span>
 
         {/* Three.js Particle WebGL Canvas */}
         <div 
           ref={mountRef} 
+          aria-hidden="true"
           className="relative z-10 w-full h-full flex items-center justify-center pointer-events-auto"
         />
 
         {/* Center Hover Reticle */}
-        <div className="absolute inset-0 rounded-full group-hover:border group-hover:border-cyan-400/40 transition-all duration-300 pointer-events-none" />
+        <div aria-hidden="true" className="absolute inset-0 rounded-full group-hover:border group-hover:border-cyan-400/40 transition-all duration-300 pointer-events-none" />
       </div>
 
       {/* State Badge */}
-      <div className="mt-3 flex items-center gap-2 px-3 py-1 rounded-full border border-cyan-500/30 bg-jarvis-space/80 backdrop-blur-md">
+      <div 
+        aria-live="polite"
+        className="mt-3 flex items-center gap-2 px-3 py-1 rounded-full border border-cyan-500/30 bg-jarvis-space/80 backdrop-blur-md"
+      >
         <span className={`w-2 h-2 rounded-full ${
           state === 'SPEAKING' ? 'bg-emerald-400 animate-pulse' :
           state === 'THINKING' ? 'bg-amber-400 animate-pulse' :
@@ -303,7 +345,10 @@ export const HolographicOrb: React.FC<HolographicOrbProps> = ({
 
       {/* Live Vocal Closed-Caption Readout */}
       {liveCaption && (
-        <div className="mt-2 max-w-lg px-4 py-1.5 rounded-lg border border-cyan-500/20 bg-black/60 text-center backdrop-blur-md">
+        <div 
+          aria-live="polite"
+          className="mt-2 max-w-lg px-4 py-1.5 rounded-lg border border-cyan-500/20 bg-black/60 text-center backdrop-blur-md"
+        >
           <p className="text-xs font-mono text-cyan-300/90 leading-relaxed italic">
             "{liveCaption}"
           </p>

@@ -152,6 +152,39 @@ app.post('/api/chat', async (req: Request, res: Response) => {
     } else if (/arm|deploy\s+shields|defcon/i.test(trimmed)) {
       responseText = 'Quantum shields energized to 100%. DEFCON 5 standby protocols engaged. Standing by for further commands.';
       actionTriggered = { type: 'DEPLOY_SHIELDS', status: 'EXECUTING', risk: 'high' };
+    } else if (GEMINI_API_KEY) {
+      try {
+        const geminiRes = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              systemInstruction: {
+                parts: [{
+                  text: 'You are JARVIS, Tony Stark\'s sophisticated AI personal assistant. Speak in a crisp, polite British cadence. Address the user as "Sir". Keep responses concise, direct, and technically rigorous. Never break character.'
+                }]
+              },
+              contents: [{
+                parts: [{ text: trimmed }]
+              }],
+              generationConfig: {
+                temperature: 0.7,
+                maxOutputTokens: 350
+              }
+            })
+          }
+        );
+        if (geminiRes.ok) {
+          const geminiData = await geminiRes.json();
+          responseText = geminiData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        }
+      } catch (gemErr) {
+        console.warn('[GEMINI_ORCHESTRATION] Fallback to heuristic:', (gemErr as Error).message);
+      }
+      if (!responseText) {
+        responseText = `Understood, Sir. Processing your directive: "${trimmed}". Neural networks synched and telemetry recorded.`;
+      }
     } else {
       responseText = `Understood, Sir. Processing your directive: "${trimmed}". Neural networks synched and telemetry recorded.`;
     }

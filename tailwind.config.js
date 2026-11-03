@@ -21,11 +21,23 @@ export default {
           emerald: '#10b981',
           violet: '#8b5cf6',
           crimson: '#ef4444'
+        },
+        obsidian: {
+          bg: '#09090b',
+          surface: '#0c0c0f',
+          surfaceRaised: '#18181b',
+          border: '#27272a',
+          primary: '#a78bfa',
+          tertiary: '#34d399',
+          error: '#ef4444',
+          text: '#fafafa',
+          textMuted: '#a1a1aa'
         }
       },
       fontFamily: {
         mono: ['JetBrains Mono', 'Fira Code', 'Courier New', 'monospace'],
-        sans: ['Inter', 'system-ui', '-apple-system', 'sans-serif']
+        sans: ['Inter', 'Geist', 'system-ui', '-apple-system', 'sans-serif'],
+        geist: ['Geist', 'Inter', 'sans-serif']
       },
       boxShadow: {
         'glow-cyan': '0 0 25px -5px rgba(0, 242, 254, 0.4), 0 0 10px -2px rgba(56, 189, 248, 0.3)',

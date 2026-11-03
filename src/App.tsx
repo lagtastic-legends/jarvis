@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { 
   JarvisState, 
   TabId, 
+  ThemeMode,
   TelemetryData, 
   ChatMessage, 
   MemoryItem, 
@@ -31,6 +32,7 @@ export const App: React.FC = () => {
   // AI State Machine
   const [aiState, setAiState] = useState<JarvisState>('IDLE');
   const [activeTab, setActiveTab] = useState<TabId>('dashboard');
+  const [theme, setTheme] = useState<ThemeMode>('holographic');
   const [isSpeaking, setIsSpeaking] = useState<boolean>(false);
   const [liveCaption, setLiveCaption] = useState<string>('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -125,7 +127,20 @@ export const App: React.FC = () => {
       }
     });
 
-    return () => unsub();
+    // One-time gesture audio unlock for strict modern browser policies
+    const unlockAudio = () => {
+      audioSynth.init();
+      window.removeEventListener('pointerdown', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
+    window.addEventListener('pointerdown', unlockAudio, { once: true });
+    window.addEventListener('keydown', unlockAudio, { once: true });
+
+    return () => {
+      unsub();
+      window.removeEventListener('pointerdown', unlockAudio);
+      window.removeEventListener('keydown', unlockAudio);
+    };
   }, []);
 
   // Send Directive / Prompt handler
@@ -273,11 +288,20 @@ export const App: React.FC = () => {
   const pendingActions = actions.filter((a) => a.status === 'pending');
 
   return (
-    <div className="relative flex h-screen w-screen overflow-hidden bg-jarvis-void text-slate-100 font-sans">
+    <div className={`relative flex h-screen w-screen overflow-hidden font-sans transition-colors duration-300 ${
+      theme === 'obsidian' ? 'bg-[#09090b] text-[#fafafa]' : 'bg-jarvis-void text-slate-100'
+    }`}>
       {/* Background Cybernetic Layers */}
-      <div className="fixed inset-0 cyber-grid pointer-events-none z-0" />
-      <div className="fixed inset-0 radial-vignette pointer-events-none z-0" />
-      <div className="fixed inset-0 hologram-overlay pointer-events-none z-10 opacity-70" />
+      {theme === 'holographic' && (
+        <>
+          <div className="fixed inset-0 cyber-grid pointer-events-none z-0" />
+          <div className="fixed inset-0 radial-vignette pointer-events-none z-0" />
+          <div className="fixed inset-0 hologram-overlay pointer-events-none z-10 opacity-70" />
+        </>
+      )}
+      {theme === 'obsidian' && (
+        <div className="fixed inset-0 bg-[#09090b] pointer-events-none z-0" />
+      )}
 
       {/* Sidebar Navigation */}
       <Sidebar
@@ -381,6 +405,11 @@ export const App: React.FC = () => {
               onToggleSfx={handleToggleSfx}
               speechEnabled={speechEnabled}
               onToggleSpeech={handleToggleSpeech}
+              theme={theme}
+              onThemeChange={(t) => {
+                setTheme(t);
+                showToast(`Theme switched to ${t === 'obsidian' ? 'Obsidian High-Contrast' : 'Holographic Cyan'}`);
+              }}
             />
           )}
         </main>

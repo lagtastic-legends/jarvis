@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
-import { Settings, Volume2, ShieldCheck, Lock } from 'lucide-react';
+import { Settings, Volume2, ShieldCheck, Lock, Palette } from 'lucide-react';
+import { ThemeMode } from '../../types/jarvis';
 
 interface SystemSettingsViewProps {
   volume: number;
@@ -8,6 +9,8 @@ interface SystemSettingsViewProps {
   onToggleSfx: () => void;
   speechEnabled: boolean;
   onToggleSpeech: () => void;
+  theme: ThemeMode;
+  onThemeChange: (t: ThemeMode) => void;
 }
 
 export const SystemSettingsView: React.FC<SystemSettingsViewProps> = ({
@@ -17,6 +20,8 @@ export const SystemSettingsView: React.FC<SystemSettingsViewProps> = ({
   onToggleSfx,
   speechEnabled,
   onToggleSpeech,
+  theme,
+  onThemeChange,
 }) => {
   const [hudGlare, setHudGlare] = useState(true);
   const [wakeWord, setWakeWord] = useState(true);
@@ -32,9 +37,60 @@ export const SystemSettingsView: React.FC<SystemSettingsViewProps> = ({
               System Settings & Neural I/O Config
             </h2>
             <p className="text-[11px] font-mono text-cyan-400/70">
-              Hardware parameters, audio synth, and security boundary locks
+              Hardware parameters, theme styles, audio synth, and security locks
             </p>
           </div>
+        </div>
+      </div>
+
+      {/* Visual Design System Switcher (Obsidian vs Holographic) */}
+      <div className="p-4 rounded-xl border border-jarvis-border/40 bg-jarvis-void/60 space-y-3">
+        <div className="flex items-center gap-2">
+          <Palette className="w-4 h-4 text-cyan-400" />
+          <span className="font-mono text-xs font-bold text-slate-200 uppercase tracking-wider">
+            Visual Design System Architecture
+          </span>
+        </div>
+        <p className="text-[11px] text-slate-400 leading-relaxed">
+          Switch between the cinematic Marvel-inspired Holographic Cyan HUD and the precision developer-grade Obsidian High-Contrast Dark theme defined in <code className="text-violet-400 font-mono">obsidian/DESIGN.md</code>.
+        </p>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+          <button
+            type="button"
+            onClick={() => onThemeChange('holographic')}
+            className={`p-3.5 rounded-xl border text-left transition-all ${
+              theme === 'holographic'
+                ? 'border-cyan-400 bg-cyan-950/40 text-cyan-300 shadow-glow-cyan'
+                : 'border-jarvis-border/40 bg-jarvis-space/40 text-slate-400 hover:border-slate-500'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-mono text-xs font-bold">Holographic Cyan HUD</span>
+              <span className="w-2.5 h-2.5 rounded-full bg-cyan-400" />
+            </div>
+            <p className="text-[10px] text-slate-400">
+              Electric cyan, glassmorphic blur, lens flares, scanlines & 3D particle orbit.
+            </p>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => onThemeChange('obsidian')}
+            className={`p-3.5 rounded-xl border text-left transition-all ${
+              theme === 'obsidian'
+                ? 'border-violet-400 bg-zinc-900/80 text-violet-300 shadow-glow-violet'
+                : 'border-jarvis-border/40 bg-jarvis-space/40 text-slate-400 hover:border-slate-500'
+            }`}
+          >
+            <div className="flex items-center justify-between mb-1">
+              <span className="font-mono text-xs font-bold">Obsidian High-Contrast</span>
+              <span className="w-2.5 h-2.5 rounded-full bg-violet-400" />
+            </div>
+            <p className="text-[10px] text-slate-400">
+              "Precision in Darkness" — Near-black surfaces, zinc borders, soft violet & emerald.
+            </p>
+          </button>
         </div>
       </div>
 
