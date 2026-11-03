@@ -388,6 +388,48 @@ export class JarvisApiClient {
     }
   }
 
+  // Direct Backend Email Status Check
+  public async getEmailStatus(): Promise<{ success: boolean; configured: boolean; senderEmail?: string; mode?: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/api/actions/email-status`, {
+        signal: AbortSignal.timeout(3000),
+      });
+      return await res.json();
+    } catch {
+      return { success: false, configured: false, mode: 'none' };
+    }
+  }
+
+  // Direct Backend Email Send with Approval
+  public async sendApprovedEmail(payload: {
+    actionId?: string;
+    to: string;
+    subject: string;
+    body: string;
+  }): Promise<{ success: boolean; messageId?: string; reply?: string; error?: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/api/actions/send-email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(15000),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return {
+          success: false,
+          error: data.error || `HTTP ${res.status}: Failed to dispatch email`,
+        };
+      }
+      return data;
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err.message || 'Network anomaly during email dispatch',
+      };
+    }
+  }
+
   // Fetch Tasks
   public async getTasks(): Promise<TaskDirective[]> {
     const defaultTasks: TaskDirective[] = [

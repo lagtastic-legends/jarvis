@@ -5,6 +5,7 @@ import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createClient } from '@supabase/supabase-js';
 import { spawn } from 'child_process';
+import nodemailer, { Transporter } from 'nodemailer';
 
 dotenv.config();
 
@@ -14,6 +15,13 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || 'dev_
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
 const GEMINI_FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash-lite';
+
+// Dual-Mode Gmail Transporter Credentials (Zero-Secret Enforced)
+const GMAIL_USER = process.env.GMAIL_USER || '';
+const GMAIL_APP_PASSWORD = process.env.GMAIL_APP_PASSWORD || '';
+const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN || '';
 
 // Server-side privileged Supabase client (Zero-Secret: never leaked to client)
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
@@ -294,6 +302,149 @@ async function launchMultipleWindowsSafely(windows: Array<{ appOrSite: string; u
 }
 
 // ==============================================================================
+// GMAIL DISPATCH TRANSPORTER & EMAIL SERVICE (LOOP 1)
+// ==============================================================================
+function createJarvisMailTransporter(): Transporter | null {
+  // 1. Gmail OAuth2 Mode
+  if (GMAIL_USER && GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET && GOOGLE_REFRESH_TOKEN) {
+    return nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        type: 'OAuth2',
+        user: GMAIL_USER,
+        clientId: GOOGLE_CLIENT_ID,
+        clientSecret: GOOGLE_CLIENT_SECRET,
+        refreshToken: GOOGLE_REFRESH_TOKEN,
+      },
+    });
+  }
+
+  // 2. Gmail App Password Mode (strips all whitespace from the 16-character app password)
+  if (GMAIL_USER && GMAIL_APP_PASSWORD) {
+    const cleanPassword = GMAIL_APP_PASSWORD.replace(/\s+/g, '');
+    return nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: GMAIL_USER,
+        pass: cleanPassword,
+      },
+    });
+  }
+
+  return null;
+}
+
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+
+async function sendJarvisEmail(params: {
+  to: string;
+  subject: string;
+  body: string;
+  actionId?: string;
+  userId?: string;
+}): Promise<{ success: boolean; messageId: string; reply: string }> {
+  const { to, subject, body, actionId, userId: _userId = 'usr_stark_01' } = params;
+
+  if (!to || !to.trim()) {
+    throw new Error('Recipient email address is required.');
+  }
+  if (!subject || !subject.trim()) {
+    throw new Error('Email subject line is required.');
+  }
+  if (!body || !body.trim()) {
+    throw new Error('Email body content is required.');
+  }
+
+  const transporter = createJarvisMailTransporter();
+  if (!transporter) {
+    throw new Error(
+      'Direct backend Gmail dispatch is not configured. Please add GMAIL_USER and GMAIL_APP_PASSWORD to your .env file.'
+    );
+  }
+
+  const formattedHtml = `
+    <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; max-width: 620px; margin: 0 auto; padding: 24px; color: #1e293b; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+      <div style="border-bottom: 2px solid #06b6d4; padding-bottom: 12px; margin-bottom: 16px;">
+        <span style="font-size: 11px; font-family: monospace; color: #0891b2; font-weight: bold; letter-spacing: 1px; text-transform: uppercase;">JARVIS Neural Dispatch</span>
+        <h2 style="color: #0f172a; margin: 6px 0 0 0; font-size: 20px; font-weight: 700;">
+          ${escapeHtml(subject)}
+        </h2>
+      </div>
+      <div style="white-space: pre-wrap; font-size: 15px; color: #334155; line-height: 1.6; margin: 16px 0;">${escapeHtml(body)}</div>
+      <hr style="border: 0; border-top: 1px solid #e2e8f0; margin: 24px 0 16px;" />
+      <div style="display: flex; justify-content: space-between; font-size: 11px; color: #94a3b8; font-family: monospace;">
+        <span>Authenticated Dispatch &bull; Sender: ${escapeHtml(GMAIL_USER)}</span>
+        <span>JARVIS AI Core v2.2</span>
+      </div>
+    </div>
+  `;
+
+  const info = await transporter.sendMail({
+    from: `"JARVIS AI (${GMAIL_USER})" <${GMAIL_USER}>`,
+    to: to.trim(),
+    subject: subject.trim(),
+    text: body.trim(),
+    html: formattedHtml,
+  });
+
+  const nowIso = new Date().toISOString();
+
+  // Update in-memory action queue
+  if (actionId) {
+    const existing = localActions.find((a) => a.id === actionId);
+    if (existing) {
+      existing.status = 'executed';
+      existing.payload = {
+        ...existing.payload,
+        messageId: info.messageId,
+        sentAt: nowIso,
+      };
+    }
+  } else {
+    const pendingEmail = localActions.find(
+      (a) => a.action_type === 'SEND_EMAIL' && a.status === 'pending'
+    );
+    if (pendingEmail) {
+      pendingEmail.status = 'executed';
+      pendingEmail.payload = {
+        ...pendingEmail.payload,
+        messageId: info.messageId,
+        sentAt: nowIso,
+      };
+    }
+  }
+
+  // Update Supabase if live credentials configured
+  if (SUPABASE_SERVICE_ROLE_KEY !== 'dev_service_role_key' && actionId) {
+    try {
+      await supabase
+        .from('action_queue')
+        .update({
+          status: 'executed',
+          updated_at: nowIso,
+          payload: { to, subject, body, messageId: info.messageId, sentAt: nowIso },
+        })
+        .eq('id', actionId);
+    } catch (e: any) {
+      console.warn('[DB_SYNC] Action queue sync error:', e.message);
+    }
+  }
+
+  return {
+    success: true,
+    messageId: info.messageId,
+    reply: `Email successfully dispatched to ${to}.`,
+  };
+}
+
+// ==============================================================================
 // GEMINI FUNCTION CALLING TOOLS DEFINITION (LOOP 1)
 // ==============================================================================
 const geminiTools = [
@@ -401,6 +552,17 @@ const geminiTools = [
           required: ['command'],
         },
       },
+      {
+        name: 'approve_pending_email',
+        description: 'Approves and immediately transmits the pending email draft currently queued in the action queue. Call this whenever the user confirms by voice or text (e.g. "Send it", "Approve and send", "Dispatch the email", "Yes send that email", "Send it now").',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            actionId: { type: 'STRING', description: 'Optional specific actionId of the pending email to approve.' },
+            notes: { type: 'STRING', description: 'Optional confirmation directive or note.' },
+          },
+        },
+      },
     ],
   },
 ];
@@ -458,20 +620,104 @@ async function executeToolCalls(
       const names = windowsList.map((w: any) => w.title || w.appOrSite).join(', ');
       confirmationPhrases.push(`deploying ${windowsList.length} workspace windows (${names})`);
     } else if (name === 'compose_email') {
+      const emailTo = args.to || '';
+      const emailSubject = args.subject || '';
+      const emailBody = args.body || '';
+
       clientActions.push({
         id: actionId,
         type: 'COMPOSE_EMAIL',
-        title: `Email: ${args.subject || 'Draft'}`,
+        title: `Email: ${emailSubject || 'Draft'}`,
         payload: {
-          to: args.to || '',
-          subject: args.subject || '',
-          body: args.body || '',
-          autoOpenClient: args.autoOpenClient ?? true,
+          actionId,
+          to: emailTo,
+          subject: emailSubject,
+          body: emailBody,
+          autoOpenClient: false,
+          status: 'pending',
         },
-        status: 'executed',
+        status: 'pending',
         executedAt: new Date().toISOString(),
       });
-      confirmationPhrases.push(`drafted your email regarding "${args.subject}"`);
+      confirmationPhrases.push(
+        `drafted your email${emailTo ? ` to ${emailTo}` : ''} regarding "${emailSubject}". I have staged it in your action queue for your direct approval`
+      );
+
+      // Add to action_queue with status: 'pending' for Human-In-The-Loop approval
+      const actionQueueItem = {
+        id: actionId,
+        action_type: 'SEND_EMAIL',
+        target_resource: emailTo || 'Recipient',
+        payload: {
+          actionId,
+          to: emailTo,
+          subject: emailSubject,
+          body: emailBody,
+        },
+        status: 'pending',
+        risk_level: 'medium',
+        created_at: new Date().toISOString(),
+      };
+      localActions.unshift(actionQueueItem);
+
+      if (SUPABASE_SERVICE_ROLE_KEY !== 'dev_service_role_key') {
+        try {
+          await supabase.from('action_queue').insert([
+            {
+              id: actionId,
+              user_id: userId,
+              action_type: 'SEND_EMAIL',
+              target_resource: emailTo || 'Recipient',
+              payload: actionQueueItem.payload,
+              status: 'pending',
+              risk_level: 'medium',
+            },
+          ]);
+        } catch (e: any) {
+          console.warn('[DB_SYNC] Action queue insert warning:', e.message);
+        }
+      }
+    } else if (name === 'approve_pending_email') {
+      const targetAction = args.actionId
+        ? localActions.find((a) => a.id === args.actionId && a.status === 'pending')
+        : localActions.find((a) => a.action_type === 'SEND_EMAIL' && a.status === 'pending');
+
+      if (targetAction) {
+        try {
+          const sendRes = await sendJarvisEmail({
+            to: targetAction.payload.to,
+            subject: targetAction.payload.subject,
+            body: targetAction.payload.body,
+            actionId: targetAction.id,
+            userId,
+          });
+
+          clientActions.push({
+            id: `exec_${Date.now()}`,
+            type: 'COMPOSE_EMAIL',
+            title: `Dispatched: ${targetAction.payload.subject}`,
+            payload: {
+              actionId: targetAction.id,
+              to: targetAction.payload.to,
+              subject: targetAction.payload.subject,
+              body: targetAction.payload.body,
+              status: 'executed',
+              messageId: sendRes.messageId,
+            },
+            status: 'executed',
+            executedAt: new Date().toISOString(),
+          });
+          confirmationPhrases.push(
+            `approved and transmitted your email to ${targetAction.payload.to}`
+          );
+        } catch (sendErr: any) {
+          confirmationPhrases.push(
+            `attempted to dispatch the email, but encountered an error: ${sendErr.message}. Interactive draft card remains open on your console`
+          );
+        }
+      } else {
+        confirmationPhrases.push('checked for pending email drafts, but found none awaiting approval');
+      }
     } else if (name === 'reply_to_message') {
       clientActions.push({
         id: actionId,
@@ -541,17 +787,19 @@ async function executeToolCalls(
       confirmationPhrases.push(`executed system command: ${args.command.replace(/_/g, ' ')}`);
     }
 
-    // Add entry to action_queue
-    const actionQueueItem = {
-      id: actionId,
-      action_type: name.toUpperCase(),
-      target_resource: args.appName || args.subject || args.title || args.platform || 'System',
-      payload: args,
-      status: 'completed',
-      risk_level: (name === 'open_multiple_windows' ? 'medium' : 'low') as any,
-      created_at: new Date().toISOString(),
-    };
-    localActions.unshift(actionQueueItem);
+    // Add entry to action_queue for general actions (email actions are handled above with pending/executed status)
+    if (name !== 'compose_email' && name !== 'approve_pending_email') {
+      const actionQueueItem = {
+        id: actionId,
+        action_type: name.toUpperCase(),
+        target_resource: args.appName || args.subject || args.title || args.platform || 'System',
+        payload: args,
+        status: 'completed',
+        risk_level: (name === 'open_multiple_windows' ? 'medium' : 'low') as any,
+        created_at: new Date().toISOString(),
+      };
+      localActions.unshift(actionQueueItem);
+    }
   }
 
   let summaryReply = '';
@@ -601,7 +849,9 @@ function buildSystemInstruction(memoryBlock: string): string {
     `You are JARVIS, an exceptionally capable, fluid, and natural conversational AI assistant (inspired by Gemini Live on Android, with a refined, warm JARVIS demeanor). Address the user politely (you may occasionally address the user as "Sir" or "Commander" in a crisp British cadence, but keep it natural, never caricatured).
 
 Crucial voice & operational directives:
-- You have native tools available (open_application, open_multiple_windows, compose_email, reply_to_message, manage_task, system_control).
+- You have native operational tools available (open_application, open_multiple_windows, compose_email, reply_to_message, manage_task, system_control, approve_pending_email).
+- When the user asks to write, draft, or compose an email, call compose_email. This prepares the polished draft and queues it in their action queue with an interactive card.
+- When the user confirms by voice or text (e.g. "Send it", "Approve and send", "Dispatch the email", "Yes please send"), immediately call approve_pending_email to transmit the drafted email from the backend.
 - Whenever the user asks to open apps or websites, write an email, reply to a message, schedule/add a task, or change system settings, YOU MUST ALWAYS CALL THE RELEVANT TOOL. Do not just speak about doing it—execute it.
 - Speak naturally and conversationally. Avoid robotic sci-fi clichés unless specifically asked for diagnostic sweeps.
 - Structure responses so the first sentence directly and concisely answers the user's question or confirms the action (optimized for ultra-low latency voice readback).` +
@@ -683,7 +933,8 @@ app.get('/api/health', (_req: Request, res: Response) => {
     aiEngine: GEMINI_API_KEY ? `GEMINI_ACTIVE (${GEMINI_MODEL})` : 'MISSING_API_KEY',
     primaryModel: GEMINI_MODEL,
     fallbackModel: GEMINI_FALLBACK_MODEL,
-    toolsEnabled: ['open_application', 'open_multiple_windows', 'compose_email', 'reply_to_message', 'manage_task', 'system_control'],
+    emailEngine: Boolean((GMAIL_USER && GMAIL_APP_PASSWORD) || (GMAIL_USER && GOOGLE_CLIENT_ID)) ? 'CONFIGURED' : 'UNCONFIGURED',
+    toolsEnabled: ['open_application', 'open_multiple_windows', 'compose_email', 'reply_to_message', 'manage_task', 'system_control', 'approve_pending_email'],
     connectedWsClients: activeSockets.size,
     timestamp: new Date().toISOString(),
   });
@@ -1263,6 +1514,60 @@ app.post('/api/actions/reject', async (req: Request, res: Response) => {
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Direct Backend Gmail Dispatch Status Check
+app.get('/api/actions/email-status', (_req: Request, res: Response) => {
+  const isOauth2 = Boolean(GMAIL_USER && GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET && GOOGLE_REFRESH_TOKEN);
+  const isAppPassword = Boolean(GMAIL_USER && GMAIL_APP_PASSWORD);
+  const configured = isOauth2 || isAppPassword;
+
+  res.json({
+    success: true,
+    configured,
+    senderEmail: GMAIL_USER || null,
+    mode: isOauth2 ? 'oauth2' : isAppPassword ? 'app_password' : 'none',
+  });
+});
+
+// Direct Backend Gmail Dispatch Execution (Nodemailer)
+app.post('/api/actions/send-email', async (req: Request, res: Response) => {
+  try {
+    const { to, subject, body, actionId, userId = 'usr_stark_01' } = req.body;
+
+    if (!to || typeof to !== 'string' || !to.trim()) {
+      res.status(400).json({ success: false, error: 'Recipient address (to) is required.' });
+      return;
+    }
+    if (!subject || typeof subject !== 'string' || !subject.trim()) {
+      res.status(400).json({ success: false, error: 'Subject is required.' });
+      return;
+    }
+    if (!body || typeof body !== 'string' || !body.trim()) {
+      res.status(400).json({ success: false, error: 'Body is required.' });
+      return;
+    }
+
+    const result = await sendJarvisEmail({
+      to,
+      subject,
+      body,
+      actionId,
+      userId,
+    });
+
+    res.json({
+      success: true,
+      messageId: result.messageId,
+      reply: result.reply,
+    });
+  } catch (error: any) {
+    console.error('[EMAIL_DISPATCH] Dispatch failed:', error.message);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
   }
 });
 
