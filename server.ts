@@ -1238,6 +1238,25 @@ const geminiTools = [
           },
         },
       },
+      {
+        name: 'capture_and_analyze_screen',
+        description: 'Captures a live frame from the user screen, active window, or webcam sensor and analyzes it. Trigger whenever the user says "Look at my screen", "What is on my screen?", "Check my screen for errors", "Look at what I am holding", or "What do you see through the camera?".',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            focusQuestion: {
+              type: 'STRING',
+              description: 'The specific question or analysis objective (e.g. "What error is shown in the terminal?", "Summarize the open article", "Identify the object held in camera").',
+            },
+            source: {
+              type: 'STRING',
+              enum: ['screen', 'camera'],
+              description: 'Whether to inspect the computer screen or the live webcam/camera.',
+            },
+          },
+          required: ['focusQuestion', 'source'],
+        },
+      },
     ],
   },
 ];
@@ -1323,6 +1342,21 @@ async function executeToolCalls(
         result: undoRes.message,
       });
       confirmationPhrases.push(undoRes.message);
+    } else if (name === 'capture_and_analyze_screen') {
+      const focusQuestion = args.focusQuestion || 'Analyze visible content on screen';
+      const source = args.source === 'camera' ? 'camera' : 'screen';
+      clientActions.push({
+        id: actionId,
+        type: 'CAPTURE_AND_ANALYZE_SCREEN',
+        title: `Visual Sensor Capture // ${source.toUpperCase()}`,
+        payload: {
+          focusQuestion,
+          source,
+        },
+        status: 'pending',
+        executedAt: new Date().toISOString(),
+      });
+      confirmationPhrases.push(`initiating ${source} visual frame analysis for: "${focusQuestion}"`);
     } else if (name === 'open_multiple_windows') {
       const windowsList = Array.isArray(args.windows) ? args.windows : [];
       await launchMultipleWindowsSafely(windowsList);
@@ -1787,9 +1821,22 @@ async function callOpenAiCompatible(
   return { text: replyText };
 }
 
-// Helper: Format multi-turn conversation into Gemini contents structure
-function buildGeminiContents(history: HistoryItem[] = [], currentMessage: string) {
-  const contents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+interface VisualInputPayload {
+  imageBase64?: string;
+  imageMimeType?: string;
+  visualSource?: 'screen' | 'camera' | 'upload';
+}
+
+// Helper: Format multi-turn conversation into Gemini contents structure with multimodal visual awareness
+function buildGeminiContents(
+  history: HistoryItem[] = [],
+  currentMessage: string,
+  visualPayload?: VisualInputPayload
+) {
+  const contents: Array<{
+    role: 'user' | 'model';
+    parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }>;
+  }> = [];
 
   // Take the last 15 conversation turns
   const recentHistory = history.slice(-15);
@@ -1802,27 +1849,62 @@ function buildGeminiContents(history: HistoryItem[] = [], currentMessage: string
   }
 
   // Ensure turns alternate and start with 'user'
-  const sanitizedContents: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
+  const sanitizedContents: Array<{
+    role: 'user' | 'model';
+    parts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }>;
+  }> = [];
   for (const item of contents) {
     if (sanitizedContents.length === 0 && item.role !== 'user') {
       continue; // First message must be user
     }
     const lastItem = sanitizedContents[sanitizedContents.length - 1];
     if (lastItem && lastItem.role === item.role) {
-      lastItem.parts[0].text += `\n${item.parts[0].text}`;
+      if (lastItem.parts[0]?.text && item.parts[0]?.text) {
+        lastItem.parts[0].text += `\n${item.parts[0].text}`;
+      }
     } else {
       sanitizedContents.push(item);
     }
   }
 
+  // Prepend visual source per Mark-LVI source-labeling directive
+  let sourcePrefix = '';
+  if (visualPayload?.imageBase64) {
+    if (visualPayload.visualSource === 'camera') {
+      sourcePrefix = '[VISUAL SOURCE: LIVE WEBCAM FRAME]\n';
+    } else if (visualPayload.visualSource === 'upload') {
+      sourcePrefix = '[VISUAL SOURCE: USER UPLOADED IMAGE]\n';
+    } else {
+      sourcePrefix = '[VISUAL SOURCE: LIVE USER SCREENSHOT]\n';
+    }
+  }
+
+  const finalUserText = `${sourcePrefix}${currentMessage.trim()}`;
+  const userParts: Array<{ text?: string; inlineData?: { mimeType: string; data: string } }> = [
+    { text: finalUserText },
+  ];
+
+  if (visualPayload?.imageBase64) {
+    const cleanBase64 = visualPayload.imageBase64.replace(/^data:[^;]+;base64,/, '');
+    const cleanMime = (visualPayload.imageMimeType || 'image/jpeg').split(';')[0];
+    userParts.push({
+      inlineData: {
+        mimeType: cleanMime,
+        data: cleanBase64,
+      },
+    });
+  }
+
   // Append current user message
   const lastTurn = sanitizedContents[sanitizedContents.length - 1];
-  if (lastTurn && lastTurn.role === 'user') {
-    lastTurn.parts[0].text += `\n${currentMessage.trim()}`;
+  if (lastTurn && lastTurn.role === 'user' && !visualPayload?.imageBase64) {
+    if (lastTurn.parts[0]?.text) {
+      lastTurn.parts[0].text += `\n${finalUserText}`;
+    }
   } else {
     sanitizedContents.push({
       role: 'user',
-      parts: [{ text: currentMessage.trim() }],
+      parts: userParts,
     });
   }
 
@@ -1991,10 +2073,131 @@ app.post('/api/voice/transcribe', async (req: Request, res: Response) => {
 });
 
 // ==============================================================================
+// 2C. MULTIMODAL VISION & SCREEN ANALYSIS (Mark-LVI Screen Processor)
+// ==============================================================================
+app.post('/api/vision/analyze', async (req: Request, res: Response) => {
+  try {
+    const {
+      imageBase64,
+      imageMimeType = 'image/jpeg',
+      visualSource = 'screen',
+      focusQuestion = 'Analyze what is visible in this frame in detail. Describe all UI elements, text, errors, windows, or objects accurately.',
+    } = req.body;
+
+    if (!imageBase64 || typeof imageBase64 !== 'string') {
+      res.status(400).json({ success: false, error: 'imageBase64 payload is required' });
+      return;
+    }
+
+    if (!GEMINI_API_KEY) {
+      res.status(500).json({ success: false, error: 'GEMINI_API_KEY is not configured on server' });
+      return;
+    }
+
+    const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '');
+    const cleanMime = (imageMimeType || 'image/jpeg').split(';')[0];
+
+    // Source-labeling rule per Mark-LVI systems specification
+    const sourcePrefix =
+      visualSource === 'camera'
+        ? '[VISUAL SOURCE: LIVE WEBCAM FRAME]'
+        : visualSource === 'upload'
+        ? '[VISUAL SOURCE: USER UPLOADED IMAGE]'
+        : '[VISUAL SOURCE: LIVE USER SCREENSHOT]';
+
+    const promptText = `${sourcePrefix}\n${focusQuestion.trim()}`;
+
+    const candidateModels = [
+      GEMINI_MODEL,
+      'gemini-3.8-flash',
+      'gemini-2.5-flash',
+      'gemini-3.5-flash-lite',
+    ].filter((m, i, a) => Boolean(m) && a.indexOf(m) === i);
+
+    let analysis = '';
+    let usedModel = '';
+    let lastError = '';
+
+    for (const model of candidateModels) {
+      try {
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+        const resp = await fetch(geminiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(18000),
+          body: JSON.stringify({
+            contents: [
+              {
+                role: 'user',
+                parts: [
+                  { text: promptText },
+                  {
+                    inlineData: {
+                      mimeType: cleanMime,
+                      data: cleanBase64,
+                    },
+                  },
+                ],
+              },
+            ],
+            generationConfig: {
+              temperature: 0.35,
+              maxOutputTokens: 1000,
+            },
+          }),
+        });
+
+        if (resp.ok) {
+          const data = await resp.json();
+          analysis = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          if (analysis) {
+            usedModel = model;
+            break;
+          }
+        } else {
+          lastError = `Model ${model} returned HTTP ${resp.status}`;
+          console.warn(`[VISION_ANALYZE] ${lastError}`);
+        }
+      } catch (err: any) {
+        lastError = err.message;
+        console.warn(`[VISION_ANALYZE] Error with model ${model}:`, err.message);
+      }
+    }
+
+    if (analysis) {
+      res.json({
+        success: true,
+        analysis: analysis.trim(),
+        visualSource,
+        modelUsed: usedModel,
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      res.status(502).json({
+        success: false,
+        error: `Vision analysis failed: ${lastError}`,
+        analysis: '',
+      });
+    }
+  } catch (error: any) {
+    console.error('[VISION_ANALYZE] Fatal endpoint error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==============================================================================
 // 3. STREAMING CHAT (SSE with Native Tool Execution)
 // ==============================================================================
 app.post('/api/chat/stream', async (req: Request, res: Response) => {
-  const { message, conversationId, history = [], userId = 'usr_stark_01' } = req.body;
+  const {
+    message,
+    conversationId,
+    history = [],
+    userId = 'usr_stark_01',
+    imageBase64,
+    imageMimeType,
+    visualSource,
+  } = req.body;
 
   if (!message || typeof message !== 'string') {
     res.status(400).json({ error: 'Message content is required.' });
@@ -2062,7 +2265,7 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
   try {
     const memoryBlock = await getActiveMemories(userId);
     const systemInstruction = buildSystemInstruction(memoryBlock);
-    const contents = buildGeminiContents(history, trimmed);
+    const contents = buildGeminiContents(history, trimmed, { imageBase64, imageMimeType, visualSource });
 
     const candidateModels = [GEMINI_MODEL, 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'].filter(
       (m, i, a) => Boolean(m) && a.indexOf(m) === i
@@ -2309,7 +2512,15 @@ app.post('/api/chat', async (req: Request, res: Response) => {
   }
 
   try {
-    const { message, conversationId, history = [], userId = 'usr_stark_01' } = req.body;
+    const {
+      message,
+      conversationId,
+      history = [],
+      userId = 'usr_stark_01',
+      imageBase64,
+      imageMimeType,
+      visualSource,
+    } = req.body;
     if (!message || typeof message !== 'string') {
       res.status(400).json({ error: 'Message content is required.' });
       return;
@@ -2345,7 +2556,7 @@ app.post('/api/chat', async (req: Request, res: Response) => {
       try {
         const memoryBlock = await getActiveMemories(userId);
         const systemInstruction = buildSystemInstruction(memoryBlock);
-        const contents = buildGeminiContents(history, trimmed);
+        const contents = buildGeminiContents(history, trimmed, { imageBase64, imageMimeType, visualSource });
 
         const candidateModels = [GEMINI_MODEL, 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite'].filter(
           (m, i, a) => Boolean(m) && a.indexOf(m) === i

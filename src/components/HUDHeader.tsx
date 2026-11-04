@@ -6,9 +6,11 @@ import {
   ShieldAlert, 
   Menu, 
   Radio,
-  QrCode
+  QrCode,
+  EyeOff
 } from 'lucide-react';
 import { JarvisState } from '../types/jarvis';
+import { visionCapture } from '../services/visionCapture';
 
 interface HUDHeaderProps {
   state: JarvisState;
@@ -50,6 +52,20 @@ export const HUDHeader: React.FC<HUDHeaderProps> = ({
       return false;
     }
   });
+  const [visionActive, setVisionActive] = useState<{ isScreenSharing: boolean; isCameraStreaming: boolean }>({
+    isScreenSharing: false,
+    isCameraStreaming: false,
+  });
+
+  useEffect(() => {
+    const unsubVision = visionCapture.onVisionStateChange((st) => {
+      setVisionActive({
+        isScreenSharing: st.isScreenSharing,
+        isCameraStreaming: st.isCameraStreaming,
+      });
+    });
+    return unsubVision;
+  }, []);
 
   useEffect(() => {
     const updateTime = () => {
@@ -102,6 +118,23 @@ export const HUDHeader: React.FC<HUDHeaderProps> = ({
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
           <span>DEFCON 5 // SECURE</span>
         </div>
+
+        {/* Live Visual Awareness Privacy Pill & Kill Switch */}
+        {(visionActive.isScreenSharing || visionActive.isCameraStreaming) && (
+          <div className="flex items-center gap-2 px-3 py-1 rounded-full border border-amber-500/60 bg-amber-950/50 text-amber-300 text-[11px] font-mono shadow-[0_0_12px_rgba(245,158,11,0.3)] animate-pulse">
+            <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping" />
+            <span className="font-bold">
+              {visionActive.isScreenSharing ? 'SCREEN SENSOR ACTIVE' : 'CAMERA SENSOR ACTIVE'}
+            </span>
+            <button
+              onClick={() => visionCapture.stopAllVision()}
+              title="Stop Sharing Visual Feed (Kill Switch)"
+              className="ml-1 p-0.5 rounded hover:bg-amber-500/20 text-amber-300 hover:text-white transition-colors"
+            >
+              <EyeOff className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
 
         {/* Bixby Routine DND Pill */}
         {dndActive && (

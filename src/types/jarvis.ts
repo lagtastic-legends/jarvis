@@ -44,7 +44,18 @@ export type ClientActionType =
   | 'FIND_LOCAL_FILE'
   | 'EXECUTE_DEVICE_ROUTINE'
   | 'DIAGNOSE_AND_OPEN_SETTING'
-  | 'UNDO_ACTION';
+  | 'UNDO_ACTION'
+  | 'CAPTURE_AND_ANALYZE_SCREEN';
+
+export interface VisualPayload {
+  imageBase64: string;
+  imageMimeType?: string;
+  visualSource?: 'screen' | 'camera' | 'upload';
+  width?: number;
+  height?: number;
+  dataUrl?: string;
+  capturedAt?: string;
+}
 
 export interface ActionOutcome {
   status: 'done' | 'unverified' | 'failed';

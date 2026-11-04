@@ -27,7 +27,9 @@ import {
   VolumeX,
   Wrench,
   Settings,
-  RotateCcw
+  RotateCcw,
+  Camera,
+  Monitor
 } from 'lucide-react';
 import { ClientAction, ActionOutcome } from '../types/jarvis';
 import { actionExecutor } from '../services/actionExecutor';
@@ -681,6 +683,11 @@ export const ActionCard: React.FC<ActionCardProps> = ({ action, onNavigateTab })
     return <DiagnosticSettingCardView payload={action.payload} />;
   }
 
+  // 11. CAPTURE_AND_ANALYZE_SCREEN CARD (Mark-LVI Live Visual Awareness)
+  if (action.type === 'CAPTURE_AND_ANALYZE_SCREEN') {
+    return <CaptureAndAnalyzeScreenCardView payload={action.payload} outcome={action.outcome} />;
+  }
+
   return null;
 };
 
@@ -1074,6 +1081,82 @@ const DiagnosticSettingCardView: React.FC<{ payload: Record<string, any> }> = ({
           URI: {windowsSettingsUri || androidIntentUri}
         </span>
       </div>
+    </div>
+  );
+};
+
+// 5. Live Visual Sensor Analysis Card (Mark-LVI)
+const CaptureAndAnalyzeScreenCardView: React.FC<{ payload: Record<string, any>; outcome?: ActionOutcome }> = ({ payload, outcome }) => {
+  const source = payload?.source === 'camera' ? 'camera' : 'screen';
+  const focusQuestion = payload?.focusQuestion || 'Analyze visible content';
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisText, setAnalysisText] = useState(payload?.analysis || '');
+
+  const handleCaptureNow = async () => {
+    setAnalyzing(true);
+    try {
+      const res = await actionExecutor.handleCaptureAndAnalyzeScreen({ source, focusQuestion });
+      if (res.success) {
+        setAnalysisText(res.message);
+      }
+    } catch (err: any) {
+      console.warn('[VISION_CARD] Failed:', err);
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  return (
+    <div className="mt-2.5 rounded-xl border border-cyan-500/40 bg-jarvis-space/90 p-3.5 space-y-3 shadow-glow-cyan text-xs font-mono">
+      <div className="flex items-center justify-between pb-2 border-b border-cyan-500/20">
+        <div className="flex items-center gap-2 text-slate-100 font-bold">
+          {source === 'camera' ? <Camera className="w-4 h-4 text-cyan-400" /> : <Monitor className="w-4 h-4 text-cyan-400" />}
+          <span>VISUAL SENSOR // {source.toUpperCase()} AWARENESS</span>
+        </div>
+        <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-950/70 border border-cyan-500/30 text-cyan-300">
+          MARK-LVI VISION
+        </span>
+      </div>
+
+      <div className="p-2.5 rounded-lg bg-black/50 border border-cyan-500/20 space-y-1">
+        <span className="text-[10px] text-slate-400 uppercase tracking-wider block">Target Objective</span>
+        <p className="text-slate-200 font-bold">"{focusQuestion}"</p>
+      </div>
+
+      {analysisText ? (
+        <div className="p-3 rounded-lg border border-cyan-500/30 bg-jarvis-void/80 space-y-2">
+          <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider flex items-center gap-1">
+            <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+            Neural Visual Analysis
+          </span>
+          <p className="text-slate-200 leading-relaxed font-mono whitespace-pre-wrap text-[11px]">
+            {analysisText}
+          </p>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between pt-1">
+          <button
+            type="button"
+            disabled={analyzing}
+            onClick={handleCaptureNow}
+            className="px-4 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-black font-bold flex items-center gap-2 shadow-glow-cyan transition-all text-xs disabled:opacity-50"
+          >
+            {analyzing ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Capturing & Analyzing...</span>
+              </>
+            ) : (
+              <>
+                {source === 'camera' ? <Camera className="w-3.5 h-3.5" /> : <Monitor className="w-3.5 h-3.5" />}
+                <span>Trigger Visual Scan Now</span>
+              </>
+            )}
+          </button>
+        </div>
+      )}
+
+      {outcome && <ActionOutcomeBadge outcome={outcome} />}
     </div>
   );
 };

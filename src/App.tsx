@@ -7,12 +7,14 @@ import {
   ChatMessage, 
   MemoryItem, 
   TaskDirective, 
-  ActionQueueItem 
+  ActionQueueItem,
+  VisualPayload 
 } from './types/jarvis';
 import { audioSynth } from './services/audioSynth';
 import { speechEngine } from './services/speechEngine';
 import { api } from './services/api';
 import { actionExecutor } from './services/actionExecutor';
+import { visionCapture } from './services/visionCapture';
 
 import { HUDHeader } from './components/HUDHeader';
 import { Sidebar } from './components/Sidebar';
@@ -196,9 +198,27 @@ export const App: React.FC = () => {
     };
   }, []);
 
-  // Real-time Streaming Directive / Prompt handler with low-latency sentence speech
-  const handleSendDirective = useCallback(async (text: string) => {
-    if (!text.trim()) return;
+  // Real-time Streaming Directive / Prompt handler with low-latency sentence speech & visual awareness
+  const handleSendDirective = useCallback(async (text: string, incomingVisual?: VisualPayload) => {
+    if (!text.trim() && !incomingVisual) return;
+
+    let visualPayload = incomingVisual;
+    // Auto-capture frame if Continuous Screen/Camera Awareness is active and no visual was explicitly passed
+    if (!visualPayload) {
+      if (visionCapture.isScreenActive()) {
+        try {
+          visualPayload = await visionCapture.captureScreenFrame();
+        } catch {
+          // Ignore
+        }
+      } else if (visionCapture.isCameraActive()) {
+        try {
+          visualPayload = await visionCapture.captureCameraFrame();
+        } catch {
+          // Ignore
+        }
+      }
+    }
 
     // Halt previous ongoing speech or stream (barge-in)
     if (activeAbortControllerRef.current) {
@@ -217,6 +237,7 @@ export const App: React.FC = () => {
       sender: 'user',
       content: text,
       timestamp: new Date().toLocaleTimeString('en-GB', { hour12: false }),
+      metadata: visualPayload ? { visualAttachment: visualPayload } : undefined,
     };
 
     const assistantMsgId = `msg_a_${Date.now() + 1}`;
@@ -295,7 +316,8 @@ export const App: React.FC = () => {
 
           activeAbortControllerRef.current = null;
         },
-        controller.signal
+        controller.signal,
+        visualPayload
       );
     } catch (err: any) {
       if (controller.signal.aborted) {

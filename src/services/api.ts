@@ -1,4 +1,4 @@
-import { MemoryItem, TaskDirective, ActionQueueItem, TelemetryData, CustomRoutine } from '../types/jarvis';
+import { MemoryItem, TaskDirective, ActionQueueItem, TelemetryData, CustomRoutine, VisualPayload } from '../types/jarvis';
 
 // Dynamic API Base URL resolution:
 // 1. Vite environment override (VITE_API_URL)
@@ -140,13 +140,21 @@ export class JarvisApiClient {
     history: HistoryTurn[] = [],
     onChunk?: (chunk: string) => void,
     onComplete?: (fullText: string, metadata?: any, clientActions?: any[]) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    visualPayload?: VisualPayload
   ): Promise<string> {
     try {
       const res = await fetch(`${API_BASE}/api/chat/stream`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, conversationId, history }),
+        body: JSON.stringify({
+          message,
+          conversationId,
+          history,
+          imageBase64: visualPayload?.imageBase64,
+          imageMimeType: visualPayload?.imageMimeType,
+          visualSource: visualPayload?.visualSource,
+        }),
         signal,
       });
 
@@ -217,7 +225,8 @@ export class JarvisApiClient {
   public async sendChatMessage(
     message: string,
     conversationId?: string,
-    history: HistoryTurn[] = []
+    history: HistoryTurn[] = [],
+    visualPayload?: VisualPayload
   ): Promise<{
     reply: string;
     state: string;
@@ -232,7 +241,14 @@ export class JarvisApiClient {
       const res = await fetch(`${API_BASE}/api/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message, conversationId, history }),
+        body: JSON.stringify({
+          message,
+          conversationId,
+          history,
+          imageBase64: visualPayload?.imageBase64,
+          imageMimeType: visualPayload?.imageMimeType,
+          visualSource: visualPayload?.visualSource,
+        }),
         signal: controller.signal,
       });
 
@@ -247,6 +263,44 @@ export class JarvisApiClient {
       return {
         reply: `Network connection to JARVIS core server (${API_BASE}) could not be established. Please ensure server.ts is active.`,
         state: 'IDLE',
+      };
+    }
+  }
+
+  /**
+   * Multimodal Vision & Screen Analysis (Mark-LVI Screen Processor)
+   */
+  public async analyzeVision(
+    imageBase64: string,
+    imageMimeType: string = 'image/jpeg',
+    visualSource: 'screen' | 'camera' | 'upload' = 'screen',
+    focusQuestion?: string
+  ): Promise<{
+    success: boolean;
+    analysis: string;
+    visualSource?: string;
+    modelUsed?: string;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch(`${API_BASE}/api/vision/analyze`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          imageBase64,
+          imageMimeType,
+          visualSource,
+          focusQuestion,
+        }),
+        signal: AbortSignal.timeout(20000),
+      });
+      return await res.json();
+    } catch (err: any) {
+      console.warn('[API] Vision analysis error:', err);
+      return {
+        success: false,
+        analysis: '',
+        error: err.message || 'Vision analysis failed',
       };
     }
   }

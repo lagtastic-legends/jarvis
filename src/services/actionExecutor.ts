@@ -1,5 +1,7 @@
 import { ClientAction } from '../types/jarvis';
 import { api } from './api';
+import { visionCapture } from './visionCapture';
+import { speechEngine } from './speechEngine';
 
 export interface ActionExecutorCallbacks {
   onSwitchTab?: (tab: string) => void;
@@ -56,6 +58,9 @@ export class JarvisActionExecutor {
 
         case 'DIAGNOSE_AND_OPEN_SETTING':
           return this.handleDiagnoseAndOpenSetting(action.payload);
+
+        case 'CAPTURE_AND_ANALYZE_SCREEN':
+          return this.handleCaptureAndAnalyzeScreen(action.payload);
 
         default:
           return { success: false, message: `Unknown action type: ${(action as any).type}` };
@@ -437,6 +442,40 @@ export class JarvisActionExecutor {
 
     this.callbacks.onShowToast?.(`Diagnosed setting: ${diagnosedSettingName || 'System Setting'}`);
     return { success: true, message: `Opened setting for ${diagnosedSettingName}` };
+  }
+
+  // 11. CAPTURE_AND_ANALYZE_SCREEN
+  public async handleCaptureAndAnalyzeScreen(payload: Record<string, any>): Promise<{ success: boolean; message: string }> {
+    try {
+      const source = payload.source === 'camera' ? 'camera' : 'screen';
+      const focusQuestion = payload.focusQuestion || 'Analyze visible content in this frame';
+
+      this.callbacks.onShowToast?.(`Initiating ${source} visual frame capture...`);
+
+      const frame = source === 'camera'
+        ? await visionCapture.captureCameraFrame()
+        : await visionCapture.captureScreenFrame();
+
+      this.callbacks.onShowToast?.(`Neural analyzing ${source} frame...`);
+
+      const result = await api.analyzeVision(
+        frame.imageBase64,
+        frame.imageMimeType,
+        source,
+        focusQuestion
+      );
+
+      if (result.success && result.analysis) {
+        speechEngine.speakStreamChunk(result.analysis);
+        this.callbacks.onShowToast?.('Visual analysis complete');
+        return { success: true, message: result.analysis };
+      }
+
+      return { success: false, message: result.error || 'Visual analysis failed' };
+    } catch (err: any) {
+      console.warn('[ACTION_EXECUTOR] Screen/camera capture failed:', err);
+      return { success: false, message: err.message || 'Frame capture rejected' };
+    }
   }
 }
 
