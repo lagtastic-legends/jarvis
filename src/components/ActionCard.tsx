@@ -26,13 +26,102 @@ import {
   AlarmClock,
   VolumeX,
   Wrench,
-  Settings
+  Settings,
+  RotateCcw
 } from 'lucide-react';
-import { ClientAction } from '../types/jarvis';
+import { ClientAction, ActionOutcome } from '../types/jarvis';
 import { actionExecutor } from '../services/actionExecutor';
 import { api } from '../services/api';
 import { speechEngine } from '../services/speechEngine';
 import { audioSynth } from '../services/audioSynth';
+
+interface ActionOutcomeBadgeProps {
+  outcome?: ActionOutcome;
+  onUndoSuccess?: () => void;
+}
+
+export const ActionOutcomeBadge: React.FC<ActionOutcomeBadgeProps> = ({ outcome, onUndoSuccess }) => {
+  const [isUndoing, setIsUndoing] = useState<boolean>(false);
+  const [isReverted, setIsReverted] = useState<boolean>(false);
+  const [revertMessage, setRevertMessage] = useState<string>('');
+
+  if (!outcome && !isReverted) return null;
+
+  const handleUndo = async () => {
+    setIsUndoing(true);
+    try {
+      const res = await api.undoLastAction();
+      audioSynth.playChirp();
+      setIsReverted(true);
+      setRevertMessage(res.message || 'Action reverted');
+      if (onUndoSuccess) onUndoSuccess();
+    } catch (err: any) {
+      console.warn('[UNDO] Failed:', err);
+    } finally {
+      setIsUndoing(false);
+    }
+  };
+
+  if (isReverted) {
+    return (
+      <div className="flex items-center justify-between p-2 rounded-lg bg-purple-950/50 border border-purple-500/40 text-[10px] font-mono text-purple-300">
+        <span className="flex items-center gap-1.5 font-bold">
+          <RotateCcw className="w-3.5 h-3.5 text-purple-400" />
+          <span>ACTION REVERTED // {revertMessage || 'State rolled back'}</span>
+        </span>
+      </div>
+    );
+  }
+
+  const { status, pid, facts, undoable } = outcome!;
+
+  return (
+    <div className="space-y-1.5 pt-1.5 border-t border-cyan-500/15">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {status === 'done' ? (
+            <span className="px-2 py-0.5 rounded-full bg-emerald-950/70 border border-emerald-500/50 text-emerald-300 text-[10px] font-mono font-bold flex items-center gap-1 shadow-glow-emerald">
+              <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+              <span>✓ VERIFIED {pid ? `(PID: ${pid})` : ''}</span>
+            </span>
+          ) : status === 'unverified' ? (
+            <span className="px-2 py-0.5 rounded-full bg-amber-950/70 border border-amber-500/50 text-amber-300 text-[10px] font-mono font-bold flex items-center gap-1">
+              <AlertTriangle className="w-3 h-3 text-amber-400" />
+              <span>⚠ UNVERIFIED LAUNCH</span>
+            </span>
+          ) : (
+            <span className="px-2 py-0.5 rounded-full bg-red-950/70 border border-red-500/50 text-red-300 text-[10px] font-mono font-bold flex items-center gap-1">
+              <XCircle className="w-3 h-3 text-red-400" />
+              <span>✕ FAILED</span>
+            </span>
+          )}
+
+          {facts?.action === 'focused_existing' && (
+            <span className="text-[9px] text-cyan-300/80 bg-cyan-950/50 px-1.5 py-0.5 rounded border border-cyan-500/20">
+              Raised existing foreground window
+            </span>
+          )}
+        </div>
+
+        {undoable && (
+          <button
+            type="button"
+            disabled={isUndoing}
+            onClick={handleUndo}
+            className="px-2.5 py-1 rounded-lg border border-purple-500/40 bg-purple-950/40 hover:bg-purple-900/60 text-purple-300 text-[10px] font-mono flex items-center gap-1.5 transition-all shadow-[0_0_10px_rgba(168,85,247,0.2)] disabled:opacity-50"
+          >
+            {isUndoing ? (
+              <Loader2 className="w-3 h-3 animate-spin text-purple-400" />
+            ) : (
+              <RotateCcw className="w-3 h-3 text-purple-400" />
+            )}
+            <span>Undo Action</span>
+          </button>
+        )}
+      </div>
+    </div>
+  );
+};
 
 interface ActionCardProps {
   action: ClientAction;
@@ -504,6 +593,8 @@ export const ActionCard: React.FC<ActionCardProps> = ({ action, onNavigateTab })
             <ArrowUpRight className="w-3 h-3" />
           </button>
         </div>
+
+        {action.outcome && <ActionOutcomeBadge outcome={action.outcome} />}
       </div>
     );
   }
@@ -546,6 +637,8 @@ export const ActionCard: React.FC<ActionCardProps> = ({ action, onNavigateTab })
             <ArrowUpRight className="w-3 h-3" />
           </button>
         )}
+
+        {action.outcome && <ActionOutcomeBadge outcome={action.outcome} />}
       </div>
     );
   }
@@ -562,6 +655,8 @@ export const ActionCard: React.FC<ActionCardProps> = ({ action, onNavigateTab })
           Command: <span className="text-cyan-400 font-bold">{action.payload?.command}</span>
           {action.payload?.targetTab && ` ➔ ${action.payload.targetTab.toUpperCase()}`}
         </p>
+
+        {action.outcome && <ActionOutcomeBadge outcome={action.outcome} />}
       </div>
     );
   }

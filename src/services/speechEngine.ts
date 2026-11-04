@@ -1,10 +1,13 @@
+import { visemeEngine } from './visemeEngine';
+
 /**
  * Web Speech API Vocal Engine for JARVIS AI
  * Dynamically prioritizes British English male voices (Daniel, Oliver, George, Google UK English Male)
  * to emulate Paul Bettany's performance as Tony Stark's personal assistant.
  * 
  * Includes sentence-level streaming TTS queue with instant markdown stripping,
- * punctuation-boundary detection, and zero-latency user barge-in cancellation.
+ * punctuation-boundary detection, zero-latency user barge-in cancellation,
+ * and 13-class real-time viseme dispatch for Holographic 3D deformation.
  */
 export class JarvisSpeechEngine {
   private voice: SpeechSynthesisVoice | null = null;
@@ -191,22 +194,64 @@ export class JarvisSpeechEngine {
     utterance.rate = this.rate;
 
     utterance.onboundary = (e) => {
-      if (e.name === 'word' && this.onStateChangeCallback) {
+      if (e.name === 'word') {
         const word = sentence.substring(e.charIndex, e.charIndex + (e.charLength || 6));
-        this.onStateChangeCallback(true, word);
+        if (this.onStateChangeCallback) {
+          this.onStateChangeCallback(true, word);
+        }
+        visemeEngine.processSpokenWord(word, this.rate);
       }
     };
 
     utterance.onend = () => {
+      visemeEngine.reset();
       this.processQueue();
     };
 
     utterance.onerror = (err) => {
       console.warn('[SPEECH_ENGINE] Utterance error:', err);
+      visemeEngine.reset();
       this.processQueue();
     };
 
     window.speechSynthesis.speak(utterance);
+  }
+
+  /**
+   * Pre-Tool Vocal Reflex (Mark-LVI Loop 3): Instant 2-4 word vocal confirmation
+   * synthesized ahead of slow operations (e.g., "Right away, sir", "Scanning files...")
+   */
+  public speakReflex(phrase: string): void {
+    if (!this.enabled || typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    const cleaned = this.cleanTextForSpeech(phrase);
+    if (!cleaned) return;
+
+    try {
+      const utterance = new SpeechSynthesisUtterance(cleaned);
+      if (!this.voice) this.initVoices();
+      if (this.voice) utterance.voice = this.voice;
+      utterance.pitch = this.pitch;
+      utterance.rate = Math.min(1.35, this.rate * 1.15); // Snappy reflex pace
+
+      utterance.onboundary = (e) => {
+        if (e.name === 'word') {
+          const word = cleaned.substring(e.charIndex, e.charIndex + (e.charLength || 6));
+          visemeEngine.processSpokenWord(word, utterance.rate);
+        }
+      };
+
+      utterance.onend = () => {
+        visemeEngine.reset();
+      };
+
+      utterance.onerror = () => {
+        visemeEngine.reset();
+      };
+
+      window.speechSynthesis.speak(utterance);
+    } catch (err) {
+      console.warn('[SPEECH_ENGINE] Reflex error:', err);
+    }
   }
 
   /**
@@ -230,6 +275,7 @@ export class JarvisSpeechEngine {
     this.ttsQueue = [];
     this.isProcessingQueue = false;
     this.onQueueCompleteCallback = null;
+    visemeEngine.reset();
 
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();

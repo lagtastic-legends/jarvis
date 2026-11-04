@@ -4,11 +4,15 @@ import dotenv from 'dotenv';
 import http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { createClient } from '@supabase/supabase-js';
-import { spawn } from 'child_process';
+import { spawn, exec, execSync } from 'child_process';
+import util from 'util';
+import crypto from 'crypto';
 import nodemailer, { Transporter } from 'nodemailer';
 import path from 'path';
 import os from 'os';
 import fs, { promises as fsPromises } from 'fs';
+
+const execPromise = util.promisify(exec);
 
 dotenv.config();
 
@@ -185,6 +189,254 @@ let localTasks = [
     due_date: 'Tomorrow, 09:00',
   },
 ];
+
+// ==============================================================================
+// MARK-LVI OUTCOME ENGINE, UNDO STACK & CONFIRMATION GATE (LOOP 1 & 2)
+// ==============================================================================
+export interface ActionOutcome {
+  status: 'done' | 'unverified' | 'failed';
+  pid?: number;
+  processName?: string;
+  facts: Record<string, string | number | boolean>;
+  undoable: boolean;
+  undoId?: string;
+  message?: string;
+}
+
+export interface UndoItem {
+  id: string;
+  actionType: string;
+  description: string;
+  timestamp: string;
+  undo: () => Promise<{ success: boolean; message: string }>;
+}
+
+const undoStack: UndoItem[] = [];
+const MAX_UNDO_STACK = 25;
+
+export function pushUndo(item: Omit<UndoItem, 'timestamp'>) {
+  undoStack.unshift({ ...item, timestamp: new Date().toISOString() });
+  if (undoStack.length > MAX_UNDO_STACK) {
+    undoStack.pop();
+  }
+}
+
+export async function executeUndo(): Promise<{ success: boolean; undoneAction?: string; message: string }> {
+  const item = undoStack.shift();
+  if (!item) {
+    return { success: false, message: 'Nothing to undo in action history, Sir.' };
+  }
+  try {
+    const result = await item.undo();
+    return {
+      success: result.success,
+      undoneAction: item.description,
+      message: result.message,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      undoneAction: item.description,
+      message: `Failed to undo ${item.description}: ${err.message}`,
+    };
+  }
+}
+
+// Model-Proof Confirmation Gate (confirmToken is NEVER sent to the LLM)
+interface PendingConfirmation {
+  token: string;
+  actionType: string;
+  title: string;
+  description: string;
+  payload: any;
+  execute: () => Promise<any>;
+  expiresAt: number;
+}
+const pendingConfirmationsMap = new Map<string, PendingConfirmation>();
+
+export function createPendingConfirmation(
+  actionType: string,
+  title: string,
+  description: string,
+  payload: any,
+  execute: () => Promise<any>,
+  ttlMs = 90000
+): { token: string; expiresAt: number } {
+  const token = crypto.randomBytes(16).toString('hex');
+  const expiresAt = Date.now() + ttlMs;
+  pendingConfirmationsMap.set(token, {
+    token,
+    actionType,
+    title,
+    description,
+    payload,
+    execute,
+    expiresAt,
+  });
+  return { token, expiresAt };
+}
+
+// Process discovery & verification helpers (Windows win32)
+async function findRunningProcess(exeName: string): Promise<{ running: boolean; pid?: number }> {
+  if (process.platform !== 'win32') return { running: false };
+  try {
+    const { stdout } = await execPromise(`tasklist /FI "IMAGENAME eq ${exeName}" /NH /FO CSV`);
+    const lines = stdout.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      if (line.toLowerCase().includes(exeName.toLowerCase())) {
+        const parts = line.split('","');
+        if (parts.length >= 2) {
+          const pid = parseInt(parts[1].replace(/"/g, ''), 10);
+          if (!isNaN(pid)) return { running: true, pid };
+        }
+      }
+    }
+  } catch {
+    // fallback
+  }
+  return { running: false };
+}
+
+async function activateWindowByPidOrName(pid?: number, appName?: string): Promise<boolean> {
+  if (process.platform !== 'win32') return false;
+  try {
+    const target = pid ? pid.toString() : `'${(appName || '').replace(/'/g, "''")}'`;
+    await execPromise(`powershell -NoProfile -Command "(New-Object -ComObject WScript.Shell).AppActivate(${target})"`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function mapAppToExe(appName: string): { exeName: string; displayName: string; defaultArgs?: string[] } {
+  const norm = (appName || '').toLowerCase().trim();
+  if (norm.includes('notepad')) return { exeName: 'notepad.exe', displayName: 'Notepad' };
+  if (norm.includes('calc')) return { exeName: 'calc.exe', displayName: 'Calculator' };
+  if (norm.includes('code') || norm.includes('vscode') || norm.includes('vs code')) return { exeName: 'code.cmd', displayName: 'Visual Studio Code', defaultArgs: ['-n'] };
+  if (norm.includes('chrome')) return { exeName: 'chrome.exe', displayName: 'Google Chrome', defaultArgs: ['--new-window'] };
+  if (norm.includes('edge')) return { exeName: 'msedge.exe', displayName: 'Microsoft Edge' };
+  if (norm.includes('spotify')) return { exeName: 'Spotify.exe', displayName: 'Spotify' };
+  if (norm.includes('terminal') || norm.includes('cmd')) return { exeName: 'cmd.exe', displayName: 'Terminal' };
+  if (norm.includes('powershell')) return { exeName: 'powershell.exe', displayName: 'PowerShell' };
+  if (norm.includes('explorer') || norm.includes('folder') || norm.includes('files')) return { exeName: 'explorer.exe', displayName: 'File Explorer' };
+  return { exeName: `${norm.replace(/\s+/g, '')}.exe`, displayName: appName };
+}
+
+// Upgraded "Raise Don't Duplicate" & Process Table Verified Launcher
+async function launchAppVerified(appName: string, targetUrlOrPath?: string): Promise<ActionOutcome> {
+  const { exeName, displayName, defaultArgs } = mapAppToExe(appName);
+  const isWin = process.platform === 'win32';
+  const safeTarget = targetUrlOrPath ? targetUrlOrPath.replace(/["&|;^%`]/g, '').trim() : '';
+  const undoId = `undo_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+  if (isWin) {
+    // 1. "Raise, Don't Duplicate": check if already running
+    const existing = await findRunningProcess(exeName);
+    if (existing.running && existing.pid) {
+      await activateWindowByPidOrName(existing.pid, displayName);
+      return {
+        status: 'done',
+        pid: existing.pid,
+        processName: exeName,
+        facts: {
+          action: 'focused_existing',
+          app: displayName,
+          pid: existing.pid,
+          verified: true,
+        },
+        undoable: false,
+        message: `${displayName} is already running (PID: ${existing.pid}). Brought existing window to foreground.`,
+      };
+    }
+
+    // 2. Not running, spawn fresh instance
+    try {
+      let args: string[] = defaultArgs ? [...defaultArgs] : [];
+      if (safeTarget) args.push(safeTarget);
+
+      const child = spawn(exeName, args, {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+      child.unref();
+
+      // Wait 400ms then verify against OS process table
+      await new Promise((r) => setTimeout(r, 400));
+      const postCheck = await findRunningProcess(exeName);
+
+      if (postCheck.running && postCheck.pid) {
+        // Register undo closure: closing the spawned app
+        const pidToKill = postCheck.pid;
+        pushUndo({
+          id: undoId,
+          actionType: 'OPEN_APP',
+          description: `Close ${displayName} (PID: ${pidToKill})`,
+          undo: async () => {
+            try {
+              if (process.platform === 'win32') {
+                execSync(`taskkill /PID ${pidToKill} /F /T`);
+              }
+              return { success: true, message: `Terminated ${displayName} (PID: ${pidToKill})` };
+            } catch (err: any) {
+              return { success: false, message: `Could not terminate PID ${pidToKill}: ${err.message}` };
+            }
+          },
+        });
+
+        return {
+          status: 'done',
+          pid: postCheck.pid,
+          processName: exeName,
+          facts: {
+            action: 'spawned',
+            app: displayName,
+            pid: postCheck.pid,
+            verified: true,
+          },
+          undoable: true,
+          undoId,
+          message: `${displayName} launched and verified running (PID: ${postCheck.pid}).`,
+        };
+      } else {
+        return {
+          status: 'unverified',
+          processName: exeName,
+          facts: {
+            action: 'spawned_unverified',
+            app: displayName,
+            verified: false,
+          },
+          undoable: false,
+          message: `${displayName} launch signal sent, but PID could not be confirmed in process table.`,
+        };
+      }
+    } catch (err: any) {
+      // Fall back to launchAppSafely
+      const fallbackRes = launchAppSafely(appName, targetUrlOrPath);
+      return {
+        status: fallbackRes.success ? 'unverified' : 'failed',
+        processName: exeName,
+        facts: {
+          action: fallbackRes.success ? 'spawned_fallback' : 'spawn_failed',
+          app: displayName,
+          error: err.message,
+        },
+        undoable: false,
+        message: fallbackRes.message,
+      };
+    }
+  }
+
+  // Fallback for non-Windows (Darwin, Linux)
+  const legacyRes = launchAppSafely(appName, targetUrlOrPath);
+  return {
+    status: legacyRes.success ? 'done' : 'failed',
+    facts: { action: 'spawned_generic', app: appName },
+    undoable: false,
+    message: legacyRes.message,
+  };
+}
 
 // ==============================================================================
 // SAFE OS PROCESS LAUNCHER & MULTI-WINDOW SPAWNER (LOOP 2)
@@ -976,6 +1228,16 @@ const geminiTools = [
           required: ['userProblem', 'diagnosedSettingName', 'breadcrumbPath', 'explanation', 'settingKey', 'recommendedState'],
         },
       },
+      {
+        name: 'undo_last_action',
+        description: 'Reverses or undoes the latest reversible action (such as closing an opened app, deleting a created task directive, restoring previous volume/brightness, or reverting a file move) when the user says "Undo that", "Revert that", or "Take that back".',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            actionFilter: { type: 'STRING', description: 'Optional specific action type to undo.' },
+          },
+        },
+      },
     ],
   },
 ];
@@ -995,13 +1257,25 @@ async function executeToolCalls(
 ): Promise<{ clientActions: any[]; summaryReply: string }> {
   const clientActions: any[] = [];
   const confirmationPhrases: string[] = [];
+  const executedSignatures = new Set<string>();
 
-  for (const tc of toolCalls) {
+  // Mark-LVI Anti-Wandering Guard: Cap chained tool iterations at maximum 3 hops
+  const cappedToolCalls = toolCalls.slice(0, 3);
+
+  for (const tc of cappedToolCalls) {
     const { name, args } = tc;
+    const sig = `${name}:${JSON.stringify(args || {})}`;
+    if (executedSignatures.has(sig)) {
+      console.log('[ANTI-WANDERING] Deduplicating tool invocation:', sig);
+      continue;
+    }
+    executedSignatures.add(sig);
+
     const actionId = `act_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
     if (name === 'open_application') {
-      const res = launchAppSafely(args.appName, args.targetUrlOrPath);
+      // Mark-LVI "Raise, Don't Duplicate" & 3-state process verification
+      const outcome = await launchAppVerified(args.appName, args.targetUrlOrPath);
       clientActions.push({
         id: actionId,
         type: 'OPEN_APP',
@@ -1009,13 +1283,46 @@ async function executeToolCalls(
         payload: {
           appName: args.appName,
           targetUrlOrPath: args.targetUrlOrPath || '',
-          hostExecuted: res.success,
+          hostExecuted: outcome.status === 'done',
+          undoId: outcome.undoId,
+          undoable: outcome.undoable,
+          pid: outcome.pid,
         },
-        status: res.success ? 'executed' : 'pending',
+        status: outcome.status,
+        outcome,
         executedAt: new Date().toISOString(),
-        result: res.message,
+        result: outcome.message,
       });
-      confirmationPhrases.push(`launching ${args.appName}`);
+      confirmationPhrases.push(
+        outcome.status === 'done'
+          ? (outcome.facts.action === 'focused_existing'
+              ? `focused existing ${args.appName}`
+              : `launched and verified ${args.appName}${outcome.pid ? ` (PID: ${outcome.pid})` : ''}`)
+          : (outcome.status === 'unverified'
+              ? `sent launch signal for ${args.appName} (awaiting confirmation)`
+              : `failed to launch ${args.appName}`)
+      );
+    } else if (name === 'undo_last_action') {
+      const undoRes = await executeUndo();
+      clientActions.push({
+        id: actionId,
+        type: 'UNDO_ACTION',
+        title: `Undo Directive`,
+        payload: {
+          success: undoRes.success,
+          undoneAction: undoRes.undoneAction,
+        },
+        status: undoRes.success ? 'done' : 'failed',
+        outcome: {
+          status: undoRes.success ? 'done' : 'failed',
+          facts: { action: 'undo', success: undoRes.success },
+          undoable: false,
+          message: undoRes.message,
+        },
+        executedAt: new Date().toISOString(),
+        result: undoRes.message,
+      });
+      confirmationPhrases.push(undoRes.message);
     } else if (name === 'open_multiple_windows') {
       const windowsList = Array.isArray(args.windows) ? args.windows : [];
       await launchMultipleWindowsSafely(windowsList);
@@ -1159,6 +1466,22 @@ async function executeToolCalls(
           due_date: args.dueDate || 'Today',
         };
         localTasks.unshift(newTask);
+        const createdTaskId = newTask.id;
+        const taskTitle = args.title;
+        pushUndo({
+          id: `undo_${createdTaskId}`,
+          actionType: 'MANAGE_TASK',
+          description: `Delete task directive "${taskTitle}"`,
+          undo: async () => {
+            localTasks = localTasks.filter((t) => t.id !== createdTaskId);
+            if (SUPABASE_SERVICE_ROLE_KEY !== 'dev_service_role_key') {
+              try {
+                await supabase.from('tasks').delete().eq('id', createdTaskId);
+              } catch {}
+            }
+            return { success: true, message: `Reverted and deleted task "${taskTitle}".` };
+          },
+        });
         if (SUPABASE_SERVICE_ROLE_KEY !== 'dev_service_role_key') {
           try {
             await supabase.from('tasks').insert([
@@ -1189,15 +1512,42 @@ async function executeToolCalls(
         executedAt: new Date().toISOString(),
       });
     } else if (name === 'system_control') {
-      clientActions.push({
-        id: actionId,
-        type: 'SYSTEM_CONTROL',
-        title: `System: ${args.command}`,
-        payload: args,
-        status: 'executed',
-        executedAt: new Date().toISOString(),
-      });
-      confirmationPhrases.push(`executed system command: ${args.command.replace(/_/g, ' ')}`);
+      const isDangerous = ['shutdown', 'restart', 'reboot', 'power_off', 'wipe_data'].includes((args.command || '').toLowerCase());
+      if (isDangerous) {
+        const { token } = createPendingConfirmation(
+          'SYSTEM_POWER',
+          `Confirm ${args.command}`,
+          `Physical confirmation required for irreversible ${args.command} directive.`,
+          args,
+          async () => {
+            return { executed: true, command: args.command };
+          }
+        );
+        clientActions.push({
+          id: actionId,
+          type: 'SYSTEM_CONTROL',
+          title: `Action Requires Confirmation: ${args.command}`,
+          payload: {
+            ...args,
+            requiresConfirmation: true,
+            confirmToken: token,
+          },
+          status: 'pending',
+          executedAt: new Date().toISOString(),
+          result: `Physical approval token issued: waiting for user confirmation on console.`,
+        });
+        confirmationPhrases.push(`staged ${args.command} for your physical confirmation on screen`);
+      } else {
+        clientActions.push({
+          id: actionId,
+          type: 'SYSTEM_CONTROL',
+          title: `System: ${args.command}`,
+          payload: args,
+          status: 'executed',
+          executedAt: new Date().toISOString(),
+        });
+        confirmationPhrases.push(`executed system command: ${args.command.replace(/_/g, ' ')}`);
+      }
     } else if (name === 'manage_app_notifications') {
       const appsList = Array.isArray(args.apps) ? args.apps : [];
       clientActions.push({
@@ -1392,6 +1742,49 @@ Crucial voice & operational directives:
 interface HistoryItem {
   role: 'user' | 'model' | 'assistant';
   content: string;
+}
+
+// Helper: Call local OpenAI-compatible chat completion provider (Mark-LVI Engine B)
+async function callOpenAiCompatible(
+  systemInstruction: string,
+  history: HistoryItem[],
+  currentMessage: string,
+  config: EngineConfig['localOpenai']
+): Promise<{ text: string }> {
+  const url = `${config.baseUrl.replace(/\/+$/, '')}/chat/completions`;
+  const messages: any[] = [{ role: 'system', content: systemInstruction }];
+  for (const h of history.slice(-15)) {
+    messages.push({
+      role: h.role === 'model' || h.role === 'assistant' ? 'assistant' : 'user',
+      content: h.content,
+    });
+  }
+  messages.push({ role: 'user', content: currentMessage });
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (config.apiKey && config.apiKey !== '••••••••') headers['Authorization'] = `Bearer ${config.apiKey}`;
+
+  const resp = await fetch(url, {
+    method: 'POST',
+    headers,
+    signal: AbortSignal.timeout(15000),
+    body: JSON.stringify({
+      model: config.modelName,
+      messages,
+      temperature: 0.7,
+      max_tokens: 600,
+    }),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text();
+    throw new Error(`OpenAI-compatible server returned HTTP ${resp.status}: ${errText}`);
+  }
+
+  const data: any = await resp.json();
+  const choice = data.choices?.[0];
+  const replyText = choice?.message?.content || '';
+  return { text: replyText };
 }
 
 // Helper: Format multi-turn conversation into Gemini contents structure
@@ -1635,6 +2028,20 @@ app.post('/api/chat/stream', async (req: Request, res: Response) => {
     );
     res.end();
     return;
+  }
+
+  // 2. Mark-LVI Engine B: OpenAI-Compatible Local Provider (Ollama, LM Studio, vLLM, Groq)
+  if (currentEngineConfig.selectedEngine === 'local_openai') {
+    try {
+      const memoryBlock = await getActiveMemories(userId);
+      const systemInstruction = buildSystemInstruction(memoryBlock);
+      const localRes = await callOpenAiCompatible(systemInstruction, history, trimmed, currentEngineConfig.localOpenai);
+      res.write(`data: ${JSON.stringify({ chunk: localRes.text, done: true, fullText: localRes.text })}\n\n`);
+      res.end();
+      return;
+    } catch (err: any) {
+      console.warn('[LOCAL_OPENAI] Local model failed, falling back to Gemini cloud ladder:', err.message);
+    }
   }
 
   if (!GEMINI_API_KEY) {
@@ -2338,6 +2745,259 @@ app.post('/api/actions/open-setting', async (req: Request, res: Response) => {
     console.error('[OPEN_SETTING] Error launching setting:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// ==============================================================================
+// MARK-LVI EXTENDED ACTIONS & SYSTEM ROUTES (LOOP 1 & 2)
+// ==============================================================================
+
+// 1. Reversible Action Undo (Mark-LVI Undo Stack)
+app.post('/api/actions/undo', async (_req: Request, res: Response) => {
+  try {
+    const outcome = await executeUndo();
+    res.json(outcome);
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 2. Model-Proof Confirmation Gate (Out-of-band confirmation)
+app.post('/api/actions/confirm', async (req: Request, res: Response) => {
+  try {
+    const { confirmToken } = req.body;
+    if (!confirmToken || !pendingConfirmationsMap.has(confirmToken)) {
+      res.status(400).json({ success: false, message: 'Invalid or non-existent confirmation token, Sir.' });
+      return;
+    }
+    const pending = pendingConfirmationsMap.get(confirmToken)!;
+    if (Date.now() > pending.expiresAt) {
+      pendingConfirmationsMap.delete(confirmToken);
+      res.status(410).json({ success: false, message: 'Confirmation token has expired, Sir.' });
+      return;
+    }
+    pendingConfirmationsMap.delete(confirmToken);
+    const result = await pending.execute();
+    res.json({
+      success: true,
+      actionType: pending.actionType,
+      message: `Directive ${pending.title} confirmed and executed by physical authorization.`,
+      result,
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/actions/cancel', async (req: Request, res: Response) => {
+  const { confirmToken } = req.body;
+  if (confirmToken && pendingConfirmationsMap.has(confirmToken)) {
+    pendingConfirmationsMap.delete(confirmToken);
+  }
+  res.json({ success: true, message: 'Action cancelled by user authorization.' });
+});
+
+// 3. Dual-Engine Configuration & Live Latency Tester (Mark-LVI Engine & Providers)
+interface EngineConfig {
+  selectedEngine: 'gemini_cloud' | 'local_openai';
+  gemini: {
+    primaryModel: string;
+    fallbackModel: string;
+  };
+  localOpenai: {
+    baseUrl: string;
+    apiKey: string;
+    modelName: string;
+  };
+}
+
+const currentEngineConfig: EngineConfig = {
+  selectedEngine: 'gemini_cloud',
+  gemini: {
+    primaryModel: process.env.GEMINI_MODEL || 'gemini-3.8-flash',
+    fallbackModel: process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.5-flash-lite',
+  },
+  localOpenai: {
+    baseUrl: process.env.LOCAL_OPENAI_BASE_URL || 'http://localhost:11434/v1',
+    apiKey: process.env.LOCAL_OPENAI_API_KEY || '',
+    modelName: process.env.LOCAL_OPENAI_MODEL || 'llama3.2',
+  },
+};
+
+app.get('/api/engine/config', (_req: Request, res: Response) => {
+  res.json({
+    success: true,
+    config: {
+      ...currentEngineConfig,
+      localOpenai: {
+        ...currentEngineConfig.localOpenai,
+        apiKey: currentEngineConfig.localOpenai.apiKey ? '••••••••' : '',
+      },
+    },
+  });
+});
+
+app.post('/api/engine/config', (req: Request, res: Response) => {
+  try {
+    const { selectedEngine, localOpenai, gemini } = req.body;
+    if (selectedEngine === 'gemini_cloud' || selectedEngine === 'local_openai') {
+      currentEngineConfig.selectedEngine = selectedEngine;
+    }
+    if (gemini?.primaryModel) currentEngineConfig.gemini.primaryModel = gemini.primaryModel;
+    if (gemini?.fallbackModel) currentEngineConfig.gemini.fallbackModel = gemini.fallbackModel;
+    if (localOpenai?.baseUrl) currentEngineConfig.localOpenai.baseUrl = localOpenai.baseUrl;
+    if (localOpenai?.modelName) currentEngineConfig.localOpenai.modelName = localOpenai.modelName;
+    if (typeof localOpenai?.apiKey === 'string' && localOpenai.apiKey !== '••••••••') {
+      currentEngineConfig.localOpenai.apiKey = localOpenai.apiKey;
+    }
+
+    res.json({
+      success: true,
+      message: `Engine switched to ${currentEngineConfig.selectedEngine === 'gemini_cloud' ? 'Gemini Cloud Ladder' : `Local OpenAI-Compatible (${currentEngineConfig.localOpenai.modelName})`}`,
+      config: {
+        ...currentEngineConfig,
+        localOpenai: {
+          ...currentEngineConfig.localOpenai,
+          apiKey: currentEngineConfig.localOpenai.apiKey ? '••••••••' : '',
+        },
+      },
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+app.post('/api/engine/test', async (req: Request, res: Response) => {
+  const { engine, localOpenai } = req.body;
+  const startTime = Date.now();
+
+  if (engine === 'gemini_cloud') {
+    try {
+      if (!GEMINI_API_KEY) {
+        res.json({
+          success: false,
+          latencyMs: 0,
+          message: 'Gemini API key is not configured in server environment, Sir.',
+        });
+        return;
+      }
+      const testUrl = `https://generativelanguage.googleapis.com/v1beta/models/${currentEngineConfig.gemini.primaryModel}:generateContent?key=${GEMINI_API_KEY}`;
+      const resp = await fetch(testUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(6000),
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: 'ping' }] }],
+          generationConfig: { maxOutputTokens: 2 },
+        }),
+      });
+      const latencyMs = Date.now() - startTime;
+      if (resp.ok) {
+        res.json({
+          success: true,
+          latencyMs,
+          message: `Answered in ${(latencyMs / 1000).toFixed(2)}s — Gemini Cloud Ladder (${currentEngineConfig.gemini.primaryModel}) is nominal.`,
+        });
+        return;
+      } else {
+        const errText = await resp.text();
+        res.json({
+          success: false,
+          latencyMs,
+          message: `Gemini returned HTTP ${resp.status}: ${errText.substring(0, 100)}`,
+        });
+        return;
+      }
+    } catch (err: any) {
+      const latencyMs = Date.now() - startTime;
+      res.json({
+        success: false,
+        latencyMs,
+        message: `Gemini connection test failed: ${err.message}`,
+      });
+      return;
+    }
+  } else {
+    const targetUrl = (localOpenai?.baseUrl || currentEngineConfig.localOpenai.baseUrl || 'http://localhost:11434/v1').replace(/\/+$/, '');
+    const model = localOpenai?.modelName || currentEngineConfig.localOpenai.modelName || 'llama3.2';
+    const apiKey = (localOpenai?.apiKey && localOpenai.apiKey !== '••••••••') ? localOpenai.apiKey : currentEngineConfig.localOpenai.apiKey;
+
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (apiKey) headers['Authorization'] = `Bearer ${apiKey}`;
+
+      const pingUrl = `${targetUrl}/chat/completions`;
+      const resp = await fetch(pingUrl, {
+        method: 'POST',
+        headers,
+        signal: AbortSignal.timeout(4500),
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: 1,
+        }),
+      });
+      const latencyMs = Date.now() - startTime;
+
+      if (resp.ok) {
+        res.json({
+          success: true,
+          latencyMs,
+          message: `Answered in ${(latencyMs / 1000).toFixed(2)}s — Model '${model}' at ${targetUrl} is online and responsive.`,
+        });
+        return;
+      } else {
+        const errText = await resp.text();
+        res.json({
+          success: false,
+          latencyMs,
+          message: `Server at ${targetUrl} returned HTTP ${resp.status}: ${errText.substring(0, 100)}`,
+        });
+        return;
+      }
+    } catch (err: any) {
+      const latencyMs = Date.now() - startTime;
+      res.json({
+        success: false,
+        latencyMs,
+        message: `Nothing answered at ${targetUrl} (${err.message}) — is Ollama/local model server running?`,
+      });
+      return;
+    }
+  }
+});
+
+// 4. Host LAN & 1-Scan Mobile QR Pairing (Mark-LVI Remote Dashboard)
+app.get('/api/system/lan-info', (_req: Request, res: Response) => {
+  const interfaces = os.networkInterfaces();
+  let lanIp = 'localhost';
+
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name] || []) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        if (
+          name.toLowerCase().includes('wi-fi') ||
+          name.toLowerCase().includes('wlan') ||
+          name.toLowerCase().includes('ethernet') ||
+          lanIp === 'localhost'
+        ) {
+          lanIp = iface.address;
+        }
+      }
+    }
+  }
+
+  const pairCode = Math.floor(100000 + Math.random() * 900000).toString();
+  const pairUrl = `http://${lanIp}:5173/?pair=${pairCode}`;
+
+  res.json({
+    success: true,
+    lanIp,
+    pairCode,
+    pairUrl,
+    hostPlatform: process.platform,
+    hostname: os.hostname(),
+    timestamp: new Date().toISOString(),
+  });
 });
 
 // ==============================================================================

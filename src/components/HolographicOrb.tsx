@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
 import { JarvisState } from '../types/jarvis';
+import { visemeEngine, VisemeWeights } from '../services/visemeEngine';
 
 interface HolographicOrbProps {
   state: JarvisState;
@@ -181,11 +182,24 @@ export const HolographicOrb: React.FC<HolographicOrbProps> = ({
 
     const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+    // 13-Class Viseme deformation state (Mark-LVI Loop 3)
+    let currentVisemeWeights: VisemeWeights = { jawOpen: 0, mouthWide: 0, lipClosure: 0 };
+    let targetVisemeWeights: VisemeWeights = { jawOpen: 0, mouthWide: 0, lipClosure: 0 };
+
+    const unsubViseme = visemeEngine.onViseme((frame) => {
+      targetVisemeWeights = frame.weights;
+    });
+
     // Render loop
     let clock = 0;
     const animate = () => {
       clock += prefersReducedMotion ? 0.005 : 0.015;
       stateObj.animId = requestAnimationFrame(animate);
+
+      // Lerp viseme weights smoothly toward target frame
+      currentVisemeWeights.jawOpen += (targetVisemeWeights.jawOpen - currentVisemeWeights.jawOpen) * 0.22;
+      currentVisemeWeights.mouthWide += (targetVisemeWeights.mouthWide - currentVisemeWeights.mouthWide) * 0.22;
+      currentVisemeWeights.lipClosure += (targetVisemeWeights.lipClosure - currentVisemeWeights.lipClosure) * 0.25;
 
       // Base rotation
       particles.rotation.y += prefersReducedMotion ? 0.001 : 0.003;
@@ -198,9 +212,18 @@ export const HolographicOrb: React.FC<HolographicOrbProps> = ({
       const pos = geometry.attributes.position.array as Float32Array;
       const col = geometry.attributes.color.array as Float32Array;
 
-      // Procedural breathing and displacement based on state
+      // Procedural breathing and displacement based on state + viseme weights
       const pulseSpeed = state === 'SPEAKING' ? 3.5 : state === 'THINKING' ? 2.8 : 1.2;
       const pulseAmp = state === 'SPEAKING' ? 3.5 : state === 'THINKING' ? 2.5 : 1.0;
+
+      // Viseme physical scale factors:
+      // Open vowels expand corona; plosives pinch core; jawOpen displaces Y
+      const isSpeakingState = state === 'SPEAKING';
+      const coronaExpansion = isSpeakingState
+        ? 1.0 + (currentVisemeWeights.jawOpen * 0.18) + (currentVisemeWeights.mouthWide * 0.10) - (currentVisemeWeights.lipClosure * 0.14)
+        : 1.0;
+      const yJawDisplacement = isSpeakingState ? currentVisemeWeights.jawOpen * 6.5 : 0;
+      const plosivePinch = isSpeakingState && currentVisemeWeights.lipClosure > 0.4;
 
       for (let i = 0; i < particleCount; i++) {
         const i3 = i * 3;
@@ -209,9 +232,16 @@ export const HolographicOrb: React.FC<HolographicOrbProps> = ({
         const iz = initialPositions[i3 + 2];
 
         const wave = Math.sin(clock * pulseSpeed + ix * 0.05 + iy * 0.05) * pulseAmp;
-        pos[i3] = ix + (ix / radius) * wave;
-        pos[i3 + 1] = iy + (iy / radius) * wave;
-        pos[i3 + 2] = iz + (iz / radius) * wave;
+
+        // Apply corona expansion and plosive inner-core compression
+        let pRadiusScale = coronaExpansion;
+        if (plosivePinch && Math.abs(ix) < radius * 0.45 && Math.abs(iy) < radius * 0.45) {
+          pRadiusScale *= (1.0 - currentVisemeWeights.lipClosure * 0.25);
+        }
+
+        pos[i3] = (ix * pRadiusScale) + (ix / radius) * wave;
+        pos[i3 + 1] = (iy * pRadiusScale) + (iy / radius) * wave + (iy < 0 ? -yJawDisplacement : yJawDisplacement * 0.3);
+        pos[i3 + 2] = (iz * pRadiusScale) + (iz / radius) * wave;
 
         // Smooth color interpolation
         const tc = targetColors[i];
@@ -229,6 +259,7 @@ export const HolographicOrb: React.FC<HolographicOrbProps> = ({
 
     return () => {
       cancelAnimationFrame(stateObj.animId);
+      unsubViseme();
       container.removeEventListener('mousemove', handleMouseMove);
       container.removeEventListener('touchmove', handleTouchMove);
       resizeObserver.disconnect();

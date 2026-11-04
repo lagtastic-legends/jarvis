@@ -5,7 +5,8 @@ import {
   Sparkles, 
   ShieldAlert, 
   Menu, 
-  Radio 
+  Radio,
+  QrCode
 } from 'lucide-react';
 import { JarvisState } from '../types/jarvis';
 
@@ -20,6 +21,7 @@ interface HUDHeaderProps {
   onToggleSpeech: () => void;
   pendingActionsCount: number;
   onOpenActionQueue: () => void;
+  onOpenMobilePairing?: () => void;
   onMobileMenuToggle: () => void;
   callsign?: string;
 }
@@ -35,6 +37,7 @@ export const HUDHeader: React.FC<HUDHeaderProps> = ({
   onToggleSpeech,
   pendingActionsCount,
   onOpenActionQueue,
+  onOpenMobilePairing,
   onMobileMenuToggle,
   callsign = 'Sir',
 }) => {
@@ -138,6 +141,17 @@ export const HUDHeader: React.FC<HUDHeaderProps> = ({
         </div>
 
         <div className="h-6 w-px bg-jarvis-border/40 hidden sm:block" />
+
+        {/* Mobile QR Pairing Trigger */}
+        {onOpenMobilePairing && (
+          <button
+            onClick={onOpenMobilePairing}
+            title="Scan QR Code to Pair Mobile Phone / Android App"
+            className="p-2 rounded-lg border border-cyan-500/30 text-cyan-400 hover:text-cyan-200 hover:bg-cyan-500/10 transition-all"
+          >
+            <QrCode className="w-4 h-4" />
+          </button>
+        )}
 
         {/* Action Queue Trigger (Human-in-the-Loop) */}
         <button

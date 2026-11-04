@@ -594,6 +594,114 @@ export class JarvisApiClient {
       return { success: false, error: err.message || 'Failed to execute routine' };
     }
   }
+
+  // Mark-LVI: Reversible Action Undo (Undo Stack)
+  public async undoLastAction(): Promise<{ success: boolean; undoneAction?: string; message: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/api/actions/undo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: AbortSignal.timeout(6000),
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, message: `Failed to trigger undo: ${err.message}` };
+    }
+  }
+
+  // Mark-LVI: Model-Proof Physical Confirmation
+  public async confirmAction(confirmToken: string): Promise<{ success: boolean; message: string; result?: any }> {
+    try {
+      const res = await fetch(`${API_BASE}/api/actions/confirm`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmToken }),
+        signal: AbortSignal.timeout(8000),
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, message: `Confirmation failed: ${err.message}` };
+    }
+  }
+
+  public async cancelAction(confirmToken: string): Promise<{ success: boolean; message: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/api/actions/cancel`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ confirmToken }),
+        signal: AbortSignal.timeout(5000),
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, message: `Cancel failed: ${err.message}` };
+    }
+  }
+
+  // Mark-LVI: Engine & Providers Configuration
+  public async getEngineConfig(): Promise<{ success: boolean; config: any }> {
+    try {
+      const res = await fetch(`${API_BASE}/api/engine/config`, {
+        signal: AbortSignal.timeout(4000),
+      });
+      return await res.json();
+    } catch {
+      return {
+        success: false,
+        config: {
+          selectedEngine: 'gemini_cloud',
+          gemini: { primaryModel: 'gemini-3.8-flash', fallbackModel: 'gemini-3.5-flash-lite' },
+          localOpenai: { baseUrl: 'http://localhost:11434/v1', modelName: 'llama3.2', apiKey: '' },
+        },
+      };
+    }
+  }
+
+  public async saveEngineConfig(config: any): Promise<{ success: boolean; message: string; config?: any }> {
+    try {
+      const res = await fetch(`${API_BASE}/api/engine/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config),
+        signal: AbortSignal.timeout(5000),
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, message: err.message };
+    }
+  }
+
+  public async testEngine(engine: string, localOpenai?: any): Promise<{ success: boolean; latencyMs: number; message: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/api/engine/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ engine, localOpenai }),
+        signal: AbortSignal.timeout(7000),
+      });
+      return await res.json();
+    } catch (err: any) {
+      return { success: false, latencyMs: 0, message: `Test request failed: ${err.message}` };
+    }
+  }
+
+  // Mark-LVI: Host Wi-Fi LAN & Mobile Pairing
+  public async getLanInfo(): Promise<{ success: boolean; lanIp: string; pairCode: string; pairUrl: string; hostname: string }> {
+    try {
+      const res = await fetch(`${API_BASE}/api/system/lan-info`, {
+        signal: AbortSignal.timeout(4000),
+      });
+      return await res.json();
+    } catch {
+      return {
+        success: false,
+        lanIp: typeof window !== 'undefined' ? window.location.hostname : 'localhost',
+        pairCode: '000000',
+        pairUrl: typeof window !== 'undefined' ? window.location.origin : 'http://localhost:5173',
+        hostname: 'JARVIS-HOST',
+      };
+    }
+  }
 }
 
 export const api = new JarvisApiClient();

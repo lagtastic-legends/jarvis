@@ -13,6 +13,7 @@ import {
   Loader2
 } from 'lucide-react';
 import { api } from '../services/api';
+import { speechEngine } from '../services/speechEngine';
 
 interface MicrophoneModalProps {
   isOpen: boolean;
@@ -56,6 +57,8 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
   const audioChunksRef = useRef<Blob[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const zeroGainRef = useRef<GainNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const silenceTimerRef = useRef<any>(null);
   const restartDebounceRef = useRef<any>(null);
@@ -107,6 +110,30 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
         // Ignore
       }
       mediaStreamRef.current = null;
+    }
+    if (sourceNodeRef.current) {
+      try {
+        sourceNodeRef.current.disconnect();
+      } catch {
+        // Ignore
+      }
+      sourceNodeRef.current = null;
+    }
+    if (zeroGainRef.current) {
+      try {
+        zeroGainRef.current.disconnect();
+      } catch {
+        // Ignore
+      }
+      zeroGainRef.current = null;
+    }
+    if (analyserRef.current) {
+      try {
+        analyserRef.current.disconnect();
+      } catch {
+        // Ignore
+      }
+      analyserRef.current = null;
     }
     if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
       try {
@@ -174,8 +201,8 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
       return;
     }
 
-    // If no text was recognized yet but acoustic voice was detected, invoke Gemini audio transcription
-    if (hasDetectedVoiceRef.current && audioChunksRef.current.length > 0) {
+    // If no text was recognized yet but acoustic voice was detected or audio chunks recorded, invoke Gemini audio transcription
+    if (audioChunksRef.current.length > 0 || hasDetectedVoiceRef.current) {
       setStatus('transcribing');
       const geminiText = await transcribeWithGemini();
       if (geminiText) {
@@ -275,7 +302,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
         }
       }
 
-      // 3. AudioContext & Spectrum Analyser (VAD & Holographic Visualizer)
+      // 3. AudioContext & Spectrum Analyser (RMS VAD & Holographic Visualizer)
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       if (AudioContextClass) {
         const audioCtx = new AudioContextClass();
@@ -290,35 +317,68 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
         }
 
         const source = audioCtx.createMediaStreamSource(stream);
+        sourceNodeRef.current = source;
+
         const analyser = audioCtx.createAnalyser();
-        analyser.fftSize = 128;
-        analyser.smoothingTimeConstant = 0.4;
-        source.connect(analyser);
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.2;
         analyserRef.current = analyser;
 
-        const dataArray = new Uint8Array(analyser.frequencyBinCount);
+        // Zero-gain sink node: keeps Chromium Web Audio pipeline continuously pulling audio frames
+        const zeroGain = audioCtx.createGain();
+        zeroGain.gain.value = 0;
+        zeroGainRef.current = zeroGain;
+
+        source.connect(analyser);
+        analyser.connect(zeroGain);
+        zeroGain.connect(audioCtx.destination);
+
+        const timeData = new Uint8Array(analyser.fftSize);
+        let smoothedLevel = 0;
+
         const updateLevel = () => {
           if (!analyserRef.current || !isListeningRef.current) return;
-          analyserRef.current.getByteFrequencyData(dataArray);
+          analyserRef.current.getByteTimeDomainData(timeData);
 
-          let maxVal = 0;
-          let sum = 0;
-          for (let i = 0; i < dataArray.length; i++) {
-            const val = dataArray[i];
-            sum += val;
-            if (val > maxVal) maxVal = val;
+          let sumSquares = 0;
+          for (let i = 0; i < timeData.length; i++) {
+            const normalized = (timeData[i] - 128) / 128;
+            sumSquares += normalized * normalized;
           }
-          const avg = sum / dataArray.length;
+          const rms = Math.sqrt(sumSquares / timeData.length);
+
+          // Subtractive EchoGuard (Mark-LVI Loop 3):
+          // If speech synthesis is speaking, subtract estimated speaker bleed to prevent self-barge-in
+          const isTtsSpeaking = speechEngine.isCurrentlySpeaking();
+          const effectiveRms = isTtsSpeaking ? Math.max(0, rms - 0.12) : rms;
 
           // Responsive volume normalization with speech sensitivity boost
-          const norm = Math.min(1, Math.max(avg / 35, maxVal / 140));
-          setAudioLevel(norm);
+          // Normal conversational speech (rms 0.03 - 0.20) maps cleanly to 35% - 85% amplitude
+          const targetLevel = Math.min(1, Math.max(0, Math.pow(effectiveRms * 5.2, 0.75)));
+          smoothedLevel += (targetLevel - smoothedLevel) * 0.35;
+          setAudioLevel(smoothedLevel);
 
           // Acoustic Voice Activity Detection (VAD)
-          if (norm > 0.12) {
+          if (effectiveRms > 0.015 || smoothedLevel > 0.08) {
             hasDetectedVoiceRef.current = true;
             setHasDetectedVoice(true);
             lastVoiceTimestampRef.current = Date.now();
+          }
+
+          // VAD Auto-commit silence detector:
+          // If voice was detected, and user paused for 1.6s
+          if (hasDetectedVoiceRef.current && lastVoiceTimestampRef.current > 0) {
+            const elapsedSinceVoice = Date.now() - lastVoiceTimestampRef.current;
+            if (elapsedSinceVoice > 1600) {
+              lastVoiceTimestampRef.current = 0; // prevent repeated triggers
+              const currentText = (finalTranscriptRef.current || interimText).trim();
+              if (currentText) {
+                commitText(currentText);
+              } else if (audioChunksRef.current.length > 0) {
+                // Auto-fallback: Web Speech was silent, but voice was detected -> transcribe audio with Gemini!
+                handleCommit();
+              }
+            }
           }
 
           animFrameRef.current = requestAnimationFrame(updateLevel);
@@ -466,7 +526,14 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
   ];
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
+    <div 
+      onClick={() => {
+        if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+          audioContextRef.current.resume().catch(() => {});
+        }
+      }}
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md"
+    >
       <div className="relative w-full max-w-lg rounded-2xl border border-cyan-500/40 bg-slate-950/95 p-6 shadow-glow-cyan-lg space-y-5">
         <button
           onClick={() => {
@@ -685,17 +752,23 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
 
             <button
               onClick={() => handleCommit()}
-              disabled={!currentDisplay && !hasDetectedVoice && !isTranscribing}
+              disabled={isTranscribing}
               className="px-5 py-2.5 rounded-xl text-xs font-mono font-bold bg-cyan-500 hover:bg-cyan-400 text-black shadow-glow-cyan transition-all disabled:opacity-40 flex items-center gap-1.5"
             >
               {isTranscribing ? (
                 <>
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>Transcribing...</span>
+                  <span>Transcribing Audio...</span>
                 </>
               ) : (
                 <>
-                  <span>{hasDetectedVoice && !currentDisplay ? 'Transcribe Audio' : 'Engage Directive'}</span>
+                  <span>
+                    {currentDisplay
+                      ? 'Engage Directive'
+                      : (hasDetectedVoice || audioChunksRef.current.length > 0)
+                      ? 'Transcribe & Engage'
+                      : 'Done Speaking'}
+                  </span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </>
               )}

@@ -18,6 +18,7 @@ import { HUDHeader } from './components/HUDHeader';
 import { Sidebar } from './components/Sidebar';
 import { MicrophoneModal } from './components/MicrophoneModal';
 import { ActionApprovalModal } from './components/ActionApprovalModal';
+import { MobilePairingModal } from './components/MobilePairingModal';
 
 import { DashboardView } from './components/views/DashboardView';
 import { NeuralChatView } from './components/views/NeuralChatView';
@@ -49,6 +50,7 @@ export const App: React.FC = () => {
   const [mobileNavOpen, setMobileNavOpen] = useState<boolean>(false);
   const [micModalOpen, setMicModalOpen] = useState<boolean>(false);
   const [actionModalOpen, setActionModalOpen] = useState<boolean>(false);
+  const [mobilePairingOpen, setMobilePairingOpen] = useState<boolean>(false);
 
   // Real-time Telemetry Data
   const [telemetry, setTelemetry] = useState<TelemetryData>({
@@ -456,6 +458,7 @@ export const App: React.FC = () => {
           onToggleSpeech={handleToggleSpeech}
           pendingActionsCount={pendingActions.length}
           onOpenActionQueue={() => setActionModalOpen(true)}
+          onOpenMobilePairing={() => setMobilePairingOpen(true)}
           onMobileMenuToggle={() => setMobileNavOpen(true)}
         />
 
@@ -576,6 +579,11 @@ export const App: React.FC = () => {
         actions={actions}
         onApprove={handleApproveAction}
         onReject={handleRejectAction}
+      />
+
+      <MobilePairingModal
+        isOpen={mobilePairingOpen}
+        onClose={() => setMobilePairingOpen(false)}
       />
     </div>
   );

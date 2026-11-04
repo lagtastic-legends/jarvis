@@ -43,14 +43,26 @@ export type ClientActionType =
   | 'MANAGE_APP_NOTIFICATIONS'
   | 'FIND_LOCAL_FILE'
   | 'EXECUTE_DEVICE_ROUTINE'
-  | 'DIAGNOSE_AND_OPEN_SETTING';
+  | 'DIAGNOSE_AND_OPEN_SETTING'
+  | 'UNDO_ACTION';
+
+export interface ActionOutcome {
+  status: 'done' | 'unverified' | 'failed';
+  pid?: number;
+  processName?: string;
+  facts: Record<string, string | number | boolean>;
+  undoable: boolean;
+  undoId?: string;
+  message?: string;
+}
 
 export interface ClientAction {
   id: string;
   type: ClientActionType;
   title: string;
   payload: Record<string, any>;
-  status: 'pending' | 'executed' | 'failed';
+  status: 'pending' | 'executed' | 'failed' | 'done' | 'unverified';
+  outcome?: ActionOutcome;
   executedAt?: string;
   result?: string;
 }
