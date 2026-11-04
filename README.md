@@ -121,8 +121,8 @@ graph TD
 
 ### 1. Clone the Repository
 ```bash
-git clone https://github.com/<your-username>/jarvis-ai.git
-cd jarvis-ai
+git clone https://github.com/lagtastic-legends/jarvis.git
+cd jarvis
 ```
 
 ### 2. Install Dependencies
