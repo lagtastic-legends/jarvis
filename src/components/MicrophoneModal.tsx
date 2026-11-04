@@ -10,7 +10,8 @@ import {
   RefreshCw,
   Cpu,
   ShieldAlert,
-  Loader2
+  Loader2,
+  Sliders
 } from 'lucide-react';
 import { api } from '../services/api';
 import { speechEngine } from '../services/speechEngine';
@@ -38,6 +39,12 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
   const [manualInput, setManualInput] = useState<string>('');
   const [hasDetectedVoice, setHasDetectedVoice] = useState<boolean>(false);
   const [activeEngine, setActiveEngine] = useState<'webspeech' | 'gemini_fallback'>('webspeech');
+  
+  // Hardware Audio Devices & Sensitivity Controls
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
+  const [sensitivityBoost, setSensitivityBoost] = useState<number>(1.5);
+  const [showDevicePicker, setShowDevicePicker] = useState<boolean>(false);
 
   // Callback refs to decouple from parent re-render ticks (LOOP 1)
   const onCloseRef = useRef(onClose);
@@ -69,6 +76,30 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
   const isRecognitionRunningRef = useRef<boolean>(false);
   const hasDetectedVoiceRef = useRef<boolean>(false);
   const lastVoiceTimestampRef = useRef<number>(0);
+
+  // Load available audio input devices
+  const refreshAudioDevices = useCallback(async () => {
+    try {
+      if (navigator.mediaDevices && navigator.mediaDevices.enumerateDevices) {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const inputs = devices.filter((d) => d.kind === 'audioinput');
+        setAudioDevices(inputs);
+        if (!selectedDeviceId && inputs.length > 0) {
+          const defaultInput = inputs.find((d) => d.deviceId === 'default') || inputs[0];
+          setSelectedDeviceId(defaultInput.deviceId);
+        }
+      }
+    } catch (err) {
+      console.warn('[MIC] Could not enumerate devices:', err);
+    }
+  }, [selectedDeviceId]);
+
+  // AudioContext Gesture Unlocker
+  const ensureAudioContextRunning = useCallback(() => {
+    if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
+      audioContextRef.current.resume().catch(() => {});
+    }
+  }, []);
 
   // Stable Full Cleanup Helper
   const stopAllAudio = useCallback(() => {
@@ -216,7 +247,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
   }, [manualInput, interimText, commitText, transcribeWithGemini]);
 
   // Start real speech recognition and audio analysis
-  const startListening = useCallback(async () => {
+  const startListening = useCallback(async (overrideDeviceId?: string) => {
     stopAllAudio();
     isListeningRef.current = true;
     hasDetectedVoiceRef.current = false;
@@ -226,7 +257,6 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
     setInterimText('');
     setManualInput('');
     setErrorMessage('');
-    setActiveEngine('webspeech');
     finalTranscriptRef.current = '';
     audioChunksRef.current = [];
 
@@ -239,7 +269,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
       }
     }
 
-    // LOOP 4: Check window.isSecureContext for LAN / Mobile IP security requirements
+    // Check window.isSecureContext for LAN / Mobile IP security requirements
     const isLocalhost =
       typeof window !== 'undefined' &&
       (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
@@ -254,18 +284,27 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
     }
 
     try {
-      // 1. Microphone Audio Stream
+      // 1. Microphone Audio Stream with Resilient Driver Fallback
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('MediaDevices microphone API is not supported in this browser.');
       }
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
+      const devId = overrideDeviceId || selectedDeviceId;
+      const audioConstraints: MediaTrackConstraints = devId && devId !== 'default'
+        ? { deviceId: { exact: devId } }
+        : {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          };
+
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+      } catch (firstErr) {
+        console.warn('[MIC] Primary constraints failed, falling back to unconstrained audio:', firstErr);
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
 
       // Verify we are still supposed to be listening (not closed during async prompt)
       if (!isListeningRef.current) {
@@ -274,8 +313,9 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
       }
 
       mediaStreamRef.current = stream;
+      refreshAudioDevices();
 
-      // 2. Parallel MediaRecorder for Gemini Multimodal Audio Fallback (LOOP 3)
+      // 2. Parallel MediaRecorder for Gemini Multimodal Audio Fallback
       let recorderMime = 'audio/webm;codecs=opus';
       if (typeof MediaRecorder !== 'undefined') {
         if (!MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
@@ -298,22 +338,18 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
 
           recorder.start(250); // Collect 250ms audio timeslices
         } catch (recErr) {
-          console.warn('[MEDIA_RECORDER] Parallel recording unavailable:', recErr);
+          console.warn('[MEDIA_RECORDER] Parallel recording note:', recErr);
         }
       }
 
-      // 3. AudioContext & Spectrum Analyser (RMS VAD & Holographic Visualizer)
+      // 3. AudioContext & Spectrum Analyser (RMS + Peak VAD & Holographic Visualizer)
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       if (AudioContextClass) {
         const audioCtx = new AudioContextClass();
         audioContextRef.current = audioCtx;
 
         if (audioCtx.state === 'suspended') {
-          try {
-            await audioCtx.resume();
-          } catch (ctxErr) {
-            console.warn('[MIC] AudioContext resume note:', ctxErr);
-          }
+          audioCtx.resume().catch(() => {});
         }
 
         const source = audioCtx.createMediaStreamSource(stream);
@@ -321,7 +357,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
 
         const analyser = audioCtx.createAnalyser();
         analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.2;
+        analyser.smoothingTimeConstant = 0.15;
         analyserRef.current = analyser;
 
         // Zero-gain sink node: keeps Chromium Web Audio pipeline continuously pulling audio frames
@@ -341,35 +377,41 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
           analyserRef.current.getByteTimeDomainData(timeData);
 
           let sumSquares = 0;
+          let maxPeak = 0;
           for (let i = 0; i < timeData.length; i++) {
             const normalized = (timeData[i] - 128) / 128;
+            const abs = Math.abs(normalized);
+            if (abs > maxPeak) maxPeak = abs;
             sumSquares += normalized * normalized;
           }
           const rms = Math.sqrt(sumSquares / timeData.length);
 
-          // Subtractive EchoGuard (Mark-LVI Loop 3):
-          // If speech synthesis is speaking, subtract estimated speaker bleed to prevent self-barge-in
+          // Subtractive EchoGuard: Only active when speech synthesis is speaking
           const isTtsSpeaking = speechEngine.isCurrentlySpeaking();
-          const effectiveRms = isTtsSpeaking ? Math.max(0, rms - 0.12) : rms;
+          const effectiveRms = isTtsSpeaking ? Math.max(0, rms - 0.03) : rms;
+          const effectivePeak = isTtsSpeaking ? Math.max(0, maxPeak - 0.06) : maxPeak;
 
-          // Responsive volume normalization with speech sensitivity boost
-          // Normal conversational speech (rms 0.03 - 0.20) maps cleanly to 35% - 85% amplitude
-          const targetLevel = Math.min(1, Math.max(0, Math.pow(effectiveRms * 5.2, 0.75)));
-          smoothedLevel += (targetLevel - smoothedLevel) * 0.35;
+          // Blended Acoustic Power (70% RMS + 30% Peak) for instant vocal response
+          const acousticPower = Math.max(effectiveRms, effectivePeak * 0.45);
+
+          // Responsive volume normalization with user-selected sensitivity boost
+          const boosted = acousticPower * 7.5 * sensitivityBoost;
+          const targetLevel = Math.min(1, Math.max(0, Math.pow(boosted, 0.72)));
+          smoothedLevel += (targetLevel - smoothedLevel) * 0.40;
           setAudioLevel(smoothedLevel);
 
-          // Acoustic Voice Activity Detection (VAD)
-          if (effectiveRms > 0.015 || smoothedLevel > 0.08) {
+          // Acoustic Voice Activity Detection (VAD) with lower sensitive threshold
+          if (acousticPower > 0.008 || smoothedLevel > 0.05 || maxPeak > 0.08) {
             hasDetectedVoiceRef.current = true;
             setHasDetectedVoice(true);
             lastVoiceTimestampRef.current = Date.now();
           }
 
           // VAD Auto-commit silence detector:
-          // If voice was detected, and user paused for 1.6s
+          // If voice was detected, and user paused for 1.8s
           if (hasDetectedVoiceRef.current && lastVoiceTimestampRef.current > 0) {
             const elapsedSinceVoice = Date.now() - lastVoiceTimestampRef.current;
-            if (elapsedSinceVoice > 1600) {
+            if (elapsedSinceVoice > 1800) {
               lastVoiceTimestampRef.current = 0; // prevent repeated triggers
               const currentText = (finalTranscriptRef.current || interimText).trim();
               if (currentText) {
@@ -386,7 +428,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
         updateLevel();
       }
 
-      // 4. Web Speech API Recognition with Full Lifecycle Handling (LOOP 3)
+      // 4. Web Speech API Recognition with Full Lifecycle Handling
       const SpeechRecognitionClass =
         (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 
@@ -395,7 +437,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
         recognitionRef.current = recognition;
         recognition.continuous = true;
         recognition.interimResults = true;
-        recognition.lang = 'en-US';
+        recognition.lang = (typeof navigator !== 'undefined' && navigator.language) || 'en-US';
 
         recognition.onstart = () => {
           isRecognitionRunningRef.current = true;
@@ -450,16 +492,13 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
         };
 
         recognition.onerror = (err: any) => {
-          console.warn('[SPEECH_REC] Event warning:', err.error);
+          console.warn('[SPEECH_REC] Event notice:', err.error);
           if (err.error === 'not-allowed' || err.error === 'service-not-allowed') {
             setStatus('denied');
             setErrorMessage('Microphone access was denied by browser or system permissions.');
           } else if (err.error === 'network' || err.error === 'audio-capture') {
             // Fallback gracefully to Gemini audio transcription instead of failing
             setActiveEngine('gemini_fallback');
-            setErrorMessage(
-              `Web Speech error (${err.error}). Hybrid Gemini Audio Transcription active.`
-            );
           }
         };
 
@@ -483,7 +522,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
         try {
           recognition.start();
         } catch (recStartErr) {
-          console.warn('[SPEECH_REC] Initial start warning:', recStartErr);
+          console.warn('[SPEECH_REC] Initial start notice:', recStartErr);
         }
       } else {
         // Browser does not support Web Speech API natively (e.g. Firefox)
@@ -494,12 +533,26 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
       setStatus('denied');
       setErrorMessage(err.message || 'Unable to access microphone stream.');
     }
-  }, [stopAllAudio, commitText]);
+  }, [stopAllAudio, commitText, refreshAudioDevices, selectedDeviceId, sensitivityBoost]);
 
-  // Main lifecycle: depends STRICTLY on isOpen to eliminate 5-second telemetry teardown loop (LOOP 1)
+  // Main lifecycle: depends STRICTLY on isOpen to eliminate 5-second telemetry teardown loop
   useEffect(() => {
     if (isOpen) {
+      refreshAudioDevices();
       startListening();
+
+      // Window-level interaction unlock for strict browser AudioContext policies
+      const handleUserGesture = () => {
+        ensureAudioContextRunning();
+      };
+      window.addEventListener('pointerdown', handleUserGesture, { once: true });
+      window.addEventListener('keydown', handleUserGesture, { once: true });
+
+      return () => {
+        window.removeEventListener('pointerdown', handleUserGesture);
+        window.removeEventListener('keydown', handleUserGesture);
+        stopAllAudio();
+      };
     } else {
       stopAllAudio();
       setStatus('idle');
@@ -508,10 +561,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
       setManualInput('');
       setHasDetectedVoice(false);
     }
-    return () => {
-      stopAllAudio();
-    };
-  }, [isOpen, startListening, stopAllAudio]);
+  }, [isOpen, startListening, stopAllAudio, refreshAudioDevices, ensureAudioContextRunning]);
 
   if (!isOpen) return null;
 
@@ -519,19 +569,15 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
   const isTranscribing = status === 'transcribing';
 
   const quickDirectives = [
-    'Initiate perimeter scan',
     'Run system diagnostic',
+    'Open YouTube',
     'Activate coding mode',
-    'Daily briefing',
+    'What is my system status?',
   ];
 
   return (
     <div 
-      onClick={() => {
-        if (audioContextRef.current && audioContextRef.current.state === 'suspended') {
-          audioContextRef.current.resume().catch(() => {});
-        }
-      }}
+      onClick={ensureAudioContextRunning}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md"
     >
       <div className="relative w-full max-w-lg rounded-2xl border border-cyan-500/40 bg-slate-950/95 p-6 shadow-glow-cyan-lg space-y-5">
@@ -552,12 +598,12 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
             {status === 'listening' && (
               <span
                 className="absolute inset-0 rounded-xl border border-cyan-400 animate-ping opacity-60 pointer-events-none"
-                style={{ transform: `scale(${1 + audioLevel * 0.5})` }}
+                style={{ transform: `scale(${1 + audioLevel * 0.6})` }}
               />
             )}
           </div>
-          <div>
-            <div className="flex items-center gap-2">
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
               <h3 className="font-mono text-base font-bold text-slate-100">
                 Acoustic Sensor Stream
               </h3>
@@ -574,17 +620,25 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
                 </span>
               )}
             </div>
-            <p className="text-xs font-mono text-cyan-400/70">
-              {activeEngine === 'gemini_fallback'
-                ? 'Hybrid Gemini Neural Audio Transcription Pipeline'
-                : 'Continuous Dual-Engine Voice Comprehension (Web Speech + Gemini Audio)'}
-            </p>
+            
+            {/* Engine Selector Pill */}
+            <div className="flex items-center gap-2 mt-1">
+              <button
+                type="button"
+                onClick={() => setActiveEngine(activeEngine === 'webspeech' ? 'gemini_fallback' : 'webspeech')}
+                className="text-[11px] font-mono text-cyan-400/80 hover:text-cyan-300 flex items-center gap-1.5 transition-colors"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+                <span>Engine: {activeEngine === 'webspeech' ? 'Web Speech API (Browser)' : 'Gemini Neural Audio STT'}</span>
+                <span className="text-[9px] text-slate-400 bg-slate-900 border border-slate-700 px-1.5 py-0.5 rounded">Switch</span>
+              </button>
+            </div>
           </div>
         </div>
 
         {/* Live Audio Amplitude Visualizer */}
         {(status === 'listening' || isTranscribing) && (
-          <div className="p-3.5 rounded-xl border border-cyan-500/20 bg-slate-900/60 space-y-2">
+          <div className="p-3.5 rounded-xl border border-cyan-500/20 bg-slate-900/60 space-y-2.5">
             <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
               <span className="flex items-center gap-1.5">
                 <span>MIC INPUT LEVEL</span>
@@ -592,17 +646,73 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
                   <span className="text-emerald-400 font-bold tracking-wider">[VOICE DETECTED]</span>
                 )}
               </span>
-              <span className="text-cyan-300 font-bold">
-                {Math.round(audioLevel * 100)}% AMPLITUDE
-              </span>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => setShowDevicePicker(!showDevicePicker)}
+                  className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1"
+                >
+                  <Sliders className="w-3 h-3" />
+                  <span>Hardware & Gain</span>
+                </button>
+                <span className="text-cyan-300 font-bold">
+                  {Math.round(audioLevel * 100)}% AMPLITUDE
+                </span>
+              </div>
             </div>
+
+            {/* Hardware & Gain Drawer */}
+            {showDevicePicker && (
+              <div className="p-2.5 rounded-lg border border-cyan-500/30 bg-slate-950/80 space-y-2 text-[11px] font-mono">
+                {audioDevices.length > 0 && (
+                  <div>
+                    <label className="text-slate-400 block mb-1">Active Microphone:</label>
+                    <select
+                      value={selectedDeviceId}
+                      onChange={(e) => {
+                        const newId = e.target.value;
+                        setSelectedDeviceId(newId);
+                        startListening(newId);
+                      }}
+                      className="w-full bg-slate-900 border border-cyan-500/30 rounded px-2 py-1 text-cyan-200 text-xs focus:outline-none focus:border-cyan-400"
+                    >
+                      {audioDevices.map((d, idx) => (
+                        <option key={d.deviceId || idx} value={d.deviceId}>
+                          {d.label || `Microphone ${idx + 1}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+                <div className="flex items-center justify-between pt-1">
+                  <span className="text-slate-400">Mic Sensitivity Multiplier:</span>
+                  <div className="flex items-center gap-1">
+                    {[1.0, 1.5, 2.5].map((boost) => (
+                      <button
+                        key={boost}
+                        type="button"
+                        onClick={() => setSensitivityBoost(boost)}
+                        className={`px-2 py-0.5 rounded text-[10px] border ${
+                          sensitivityBoost === boost
+                            ? 'bg-cyan-500 text-black border-cyan-400 font-bold'
+                            : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-cyan-500/50'
+                        }`}
+                      >
+                        {boost}x
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Visualizer Bars */}
-            <div className="h-6 flex items-center justify-center gap-1">
-              {Array.from({ length: 24 }).map((_, i) => {
-                const centerDist = Math.abs(i - 12) / 12;
+            <div className="h-7 flex items-center justify-center gap-1">
+              {Array.from({ length: 26 }).map((_, i) => {
+                const centerDist = Math.abs(i - 13) / 13;
                 const dynamicHeight = Math.max(
                   4,
-                  Math.sin((i / 24) * Math.PI) * (audioLevel * 24) + 2
+                  Math.sin((i / 26) * Math.PI) * (audioLevel * 28) + 2
                 );
                 return (
                   <div
@@ -610,7 +720,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
                     className="w-1.5 rounded-full bg-gradient-to-t from-cyan-500 to-cyan-300 transition-all duration-75"
                     style={{
                       height: `${dynamicHeight}px`,
-                      opacity: 0.3 + (1 - centerDist) * 0.7,
+                      opacity: 0.35 + (1 - centerDist) * 0.65,
                     }}
                   />
                 );
@@ -626,7 +736,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
               <div className="flex flex-col items-center justify-center gap-2 py-3 text-cyan-300">
                 <Loader2 className="w-6 h-6 animate-spin text-cyan-400" />
                 <span className="font-mono text-xs tracking-wider uppercase">
-                  Processing Audio via Gemini Multimodal STT...
+                  Transcribing via Gemini Neural Audio STT...
                 </span>
               </div>
             ) : currentDisplay ? (
@@ -634,7 +744,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
                 "{currentDisplay}"
               </p>
             ) : status === 'listening' ? (
-              <p className="font-mono text-xs text-slate-500 italic text-center">
+              <p className="font-mono text-xs text-slate-400 italic text-center">
                 Speak now... JARVIS is listening for your command.
               </p>
             ) : status === 'insecure' ? (
@@ -742,7 +852,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
             {(status === 'denied' || status === 'insecure') && (
               <button
                 type="button"
-                onClick={startListening}
+                onClick={() => startListening()}
                 className="px-4 py-2 rounded-xl text-xs font-mono border border-cyan-400/50 text-cyan-300 hover:bg-cyan-950/40 transition-colors flex items-center gap-1.5"
               >
                 <RefreshCw className="w-3 h-3" />
@@ -760,15 +870,20 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
                   <span>Transcribing Audio...</span>
                 </>
+              ) : currentDisplay ? (
+                <>
+                  <span>Engage Directive</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </>
+              ) : (hasDetectedVoice || audioChunksRef.current.length > 0) ? (
+                <>
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Transcribe & Engage</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </>
               ) : (
                 <>
-                  <span>
-                    {currentDisplay
-                      ? 'Engage Directive'
-                      : (hasDetectedVoice || audioChunksRef.current.length > 0)
-                      ? 'Transcribe & Engage'
-                      : 'Done Speaking'}
-                  </span>
+                  <span>Engage Directive</span>
                   <ArrowRight className="w-3.5 h-3.5" />
                 </>
               )}

@@ -14,6 +14,37 @@ import fs, { promises as fsPromises } from 'fs';
 
 const execPromise = util.promisify(exec);
 
+// Global Unhandled Process Protection Guards
+process.on('uncaughtException', (err: Error) => {
+  console.error('[JARVIS_SYSTEM_UNCAUGHT_EXCEPTION]', err.message, err.stack);
+});
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[JARVIS_SYSTEM_UNHANDLED_REJECTION]', reason);
+});
+
+/**
+ * Safe ChildProcess Spawn Helper
+ * Always binds an error listener to prevent unhandled ENOENT crashes on invalid binary paths.
+ */
+function safeSpawn(command: string, args: string[] = [], options: any = {}) {
+  try {
+    const child = spawn(command, args, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true,
+      ...options,
+    });
+    child.on('error', (err: Error) => {
+      console.warn(`[SAFE_SPAWN_GUARD] ChildProcess error on command "${command}":`, err.message);
+    });
+    child.unref();
+    return child;
+  } catch (err: any) {
+    console.warn(`[SAFE_SPAWN_GUARD] Synchronous spawn failure on "${command}":`, err.message);
+    return null;
+  }
+}
+
 dotenv.config();
 
 const PORT = parseInt(process.env.PORT || '3001', 10);
@@ -308,26 +339,91 @@ async function activateWindowByPidOrName(pid?: number, appName?: string): Promis
   }
 }
 
-function mapAppToExe(appName: string): { exeName: string; displayName: string; defaultArgs?: string[] } {
+interface AppMapping {
+  exeName: string;
+  displayName: string;
+  defaultArgs?: string[];
+  isWebUrl?: boolean;
+  webUrl?: string;
+}
+
+function mapAppToExe(appName: string, targetUrlOrPath?: string): AppMapping {
   const norm = (appName || '').toLowerCase().trim();
+  const safeTarget = targetUrlOrPath ? targetUrlOrPath.replace(/["&|;^%`]/g, '').trim() : '';
+
+  // 1. Popular Web Destinations
+  if (norm.includes('youtube')) return { exeName: 'chrome.exe', displayName: 'YouTube', isWebUrl: true, webUrl: safeTarget.startsWith('http') ? safeTarget : 'https://www.youtube.com' };
+  if (norm.includes('gmail') || norm.includes('email') || norm.includes('mail.google')) return { exeName: 'chrome.exe', displayName: 'Gmail', isWebUrl: true, webUrl: 'https://mail.google.com' };
+  if (norm.includes('github')) return { exeName: 'chrome.exe', displayName: 'GitHub', isWebUrl: true, webUrl: safeTarget.startsWith('http') ? safeTarget : 'https://github.com' };
+  if (norm.includes('twitter') || norm === 'x' || norm.includes('x.com')) return { exeName: 'chrome.exe', displayName: 'X / Twitter', isWebUrl: true, webUrl: 'https://x.com' };
+  if (norm.includes('reddit')) return { exeName: 'chrome.exe', displayName: 'Reddit', isWebUrl: true, webUrl: 'https://www.reddit.com' };
+  if (norm.includes('netflix')) return { exeName: 'chrome.exe', displayName: 'Netflix', isWebUrl: true, webUrl: 'https://www.netflix.com' };
+  if (norm.includes('chatgpt')) return { exeName: 'chrome.exe', displayName: 'ChatGPT', isWebUrl: true, webUrl: 'https://chatgpt.com' };
+  if (norm.includes('claude')) return { exeName: 'chrome.exe', displayName: 'Claude', isWebUrl: true, webUrl: 'https://claude.ai' };
+  if (norm.includes('maps')) return { exeName: 'chrome.exe', displayName: 'Google Maps', isWebUrl: true, webUrl: 'https://maps.google.com' };
+
+  // 2. Direct Web URLs
+  if (norm.startsWith('http://') || norm.startsWith('https://') || norm.includes('.com') || norm.includes('.org') || norm.includes('.net') || norm.includes('.io')) {
+    const url = norm.startsWith('http') ? appName.trim() : `https://${appName.trim()}`;
+    return { exeName: 'chrome.exe', displayName: appName.trim(), isWebUrl: true, webUrl: url };
+  }
+
+  // 3. Desktop Software
   if (norm.includes('notepad')) return { exeName: 'notepad.exe', displayName: 'Notepad' };
-  if (norm.includes('calc')) return { exeName: 'calc.exe', displayName: 'Calculator' };
+  if (norm.includes('calc') || norm.includes('calculator')) return { exeName: 'calc.exe', displayName: 'Calculator' };
   if (norm.includes('code') || norm.includes('vscode') || norm.includes('vs code')) return { exeName: 'code.cmd', displayName: 'Visual Studio Code', defaultArgs: ['-n'] };
-  if (norm.includes('chrome')) return { exeName: 'chrome.exe', displayName: 'Google Chrome', defaultArgs: ['--new-window'] };
+  if (norm.includes('chrome') || norm.includes('browser')) return { exeName: 'chrome.exe', displayName: 'Google Chrome', defaultArgs: ['--new-window'] };
   if (norm.includes('edge')) return { exeName: 'msedge.exe', displayName: 'Microsoft Edge' };
   if (norm.includes('spotify')) return { exeName: 'Spotify.exe', displayName: 'Spotify' };
   if (norm.includes('terminal') || norm.includes('cmd')) return { exeName: 'cmd.exe', displayName: 'Terminal' };
   if (norm.includes('powershell')) return { exeName: 'powershell.exe', displayName: 'PowerShell' };
   if (norm.includes('explorer') || norm.includes('folder') || norm.includes('files')) return { exeName: 'explorer.exe', displayName: 'File Explorer' };
+
   return { exeName: `${norm.replace(/\s+/g, '')}.exe`, displayName: appName };
 }
 
 // Upgraded "Raise Don't Duplicate" & Process Table Verified Launcher
 async function launchAppVerified(appName: string, targetUrlOrPath?: string): Promise<ActionOutcome> {
-  const { exeName, displayName, defaultArgs } = mapAppToExe(appName);
+  const mapping = mapAppToExe(appName, targetUrlOrPath);
+  const { exeName, displayName, defaultArgs, isWebUrl, webUrl } = mapping;
   const isWin = process.platform === 'win32';
+  const isMac = process.platform === 'darwin';
   const safeTarget = targetUrlOrPath ? targetUrlOrPath.replace(/["&|;^%`]/g, '').trim() : '';
   const undoId = `undo_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+
+  // Handle Web Destinations safely without spawning non-existent .exe binaries
+  if (isWebUrl && webUrl) {
+    try {
+      const openCommand = isWin
+        ? `start "" "${webUrl}"`
+        : isMac
+        ? `open "${webUrl}"`
+        : `xdg-open "${webUrl}"`;
+      await execPromise(openCommand, { windowsHide: true });
+
+      return {
+        status: 'done',
+        processName: 'Browser',
+        facts: {
+          action: 'opened_web_destination',
+          app: displayName,
+          url: webUrl,
+          verified: true,
+        },
+        undoable: false,
+        message: `Navigated to ${displayName} (${webUrl}) in system browser.`,
+      };
+    } catch (err: any) {
+      console.warn(`[WEB_LAUNCH_FAILED] Failed to open ${webUrl}:`, err.message);
+      return {
+        status: 'failed',
+        processName: 'Browser',
+        facts: { error: err.message },
+        undoable: false,
+        message: `Could not launch browser for ${displayName}: ${err.message}`,
+      };
+    }
+  }
 
   if (isWin) {
     // 1. "Raise, Don't Duplicate": check if already running
@@ -354,12 +450,10 @@ async function launchAppVerified(appName: string, targetUrlOrPath?: string): Pro
       let args: string[] = defaultArgs ? [...defaultArgs] : [];
       if (safeTarget) args.push(safeTarget);
 
-      const child = spawn(exeName, args, {
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: true,
-      });
-      child.unref();
+      const child = safeSpawn(exeName, args);
+      if (!child) {
+        throw new Error(`Failed to initialize process for ${exeName}`);
+      }
 
       // Wait 400ms then verify against OS process table
       await new Promise((r) => setTimeout(r, 400));
@@ -457,49 +551,40 @@ function launchAppSafely(appName: string, targetUrlOrPath?: string): LaunchResul
   try {
     if (isWin) {
       if (normalized.includes('notepad')) {
-        const child = spawn('notepad.exe', safeTarget ? [safeTarget] : [], { detached: true, stdio: 'ignore' });
-        child.unref();
+        safeSpawn('notepad.exe', safeTarget ? [safeTarget] : []);
         return { success: true, message: 'Notepad launched successfully' };
       }
       if (normalized.includes('calc') || normalized.includes('calculator')) {
-        const child = spawn('calc.exe', [], { detached: true, stdio: 'ignore' });
-        child.unref();
+        safeSpawn('calc.exe', []);
         return { success: true, message: 'Calculator launched successfully' };
       }
       if (normalized.includes('code') || normalized.includes('vscode') || normalized.includes('vs code')) {
-        const child = spawn('cmd.exe', ['/c', 'code', '-n', safeTarget || '.'], { detached: true, stdio: 'ignore' });
-        child.unref();
+        safeSpawn('cmd.exe', ['/c', 'code', '-n', safeTarget || '.']);
         return { success: true, message: 'VS Code launched in new window' };
       }
       if (normalized.includes('chrome') || normalized.includes('browser')) {
         const targetUrl = safeTarget.startsWith('http') ? safeTarget : (safeTarget ? `https://${safeTarget}` : 'https://google.com');
-        const child = spawn('cmd.exe', ['/c', 'start', 'chrome', '--new-window', targetUrl], { detached: true, stdio: 'ignore' });
-        child.unref();
+        safeSpawn('cmd.exe', ['/c', 'start', 'chrome', '--new-window', targetUrl]);
         return { success: true, message: `Chrome browser window launched with ${targetUrl}` };
       }
       if (normalized.includes('terminal') || normalized.includes('cmd') || normalized.includes('powershell')) {
-        const child = spawn('cmd.exe', ['/c', 'start', 'cmd.exe'], { detached: true, stdio: 'ignore' });
-        child.unref();
+        safeSpawn('cmd.exe', ['/c', 'start', 'cmd.exe']);
         return { success: true, message: 'Terminal console window launched' };
       }
       if (normalized.includes('explorer') || normalized.includes('files') || normalized.includes('folder')) {
-        const child = spawn('explorer.exe', safeTarget ? [safeTarget] : [], { detached: true, stdio: 'ignore' });
-        child.unref();
+        safeSpawn('explorer.exe', safeTarget ? [safeTarget] : []);
         return { success: true, message: 'File Explorer launched' };
       }
       if (normalized.includes('spotify')) {
-        const child = spawn('cmd.exe', ['/c', 'start', 'spotify:'], { detached: true, stdio: 'ignore' });
-        child.unref();
+        safeSpawn('cmd.exe', ['/c', 'start', 'spotify:']);
         return { success: true, message: 'Spotify client launched' };
       }
       if (normalized.includes('whatsapp')) {
-        const child = spawn('cmd.exe', ['/c', 'start', 'whatsapp:'], { detached: true, stdio: 'ignore' });
-        child.unref();
+        safeSpawn('cmd.exe', ['/c', 'start', 'whatsapp:']);
         return { success: true, message: 'WhatsApp launched' };
       }
       if (normalized.includes('settings')) {
-        const child = spawn('cmd.exe', ['/c', 'start', 'ms-settings:'], { detached: true, stdio: 'ignore' });
-        child.unref();
+        safeSpawn('cmd.exe', ['/c', 'start', 'ms-settings:']);
         return { success: true, message: 'System Settings launched' };
       }
 
@@ -518,25 +603,21 @@ function launchAppSafely(appName: string, targetUrlOrPath?: string): LaunchResul
       for (const [key, url] of Object.entries(webMap)) {
         if (normalized.includes(key)) {
           const targetUrl = safeTarget.startsWith('http') ? safeTarget : url;
-          const child = spawn('cmd.exe', ['/c', 'start', 'chrome', '--new-window', targetUrl], { detached: true, stdio: 'ignore' });
-          child.unref();
+          safeSpawn('cmd.exe', ['/c', 'start', 'chrome', '--new-window', targetUrl]);
           return { success: true, message: `Opened ${key} at ${targetUrl}` };
         }
       }
 
       if (safeTarget.startsWith('http') || normalized.includes('.com') || normalized.includes('.org')) {
         const url = safeTarget.startsWith('http') ? safeTarget : `https://${normalized}`;
-        const child = spawn('cmd.exe', ['/c', 'start', 'chrome', '--new-window', url], { detached: true, stdio: 'ignore' });
-        child.unref();
+        safeSpawn('cmd.exe', ['/c', 'start', 'chrome', '--new-window', url]);
         return { success: true, message: `Opened browser at ${url}` };
       }
     } else if (isMac) {
-      const child = spawn('open', ['-a', appName, ...(safeTarget ? [safeTarget] : [])], { detached: true, stdio: 'ignore' });
-      child.unref();
+      safeSpawn('open', ['-a', appName, ...(safeTarget ? [safeTarget] : [])]);
       return { success: true, message: `Application ${appName} launched` };
     } else {
-      const child = spawn('xdg-open', [safeTarget || appName], { detached: true, stdio: 'ignore' });
-      child.unref();
+      safeSpawn('xdg-open', [safeTarget || appName]);
       return { success: true, message: `Application ${appName} launched` };
     }
   } catch (err: any) {
@@ -2910,18 +2991,14 @@ app.post('/api/actions/open-file', async (req: Request, res: Response) => {
 
     if (process.platform === 'win32') {
       if (revealInFolder) {
-        const child = spawn('explorer.exe', [`/select,${resolved}`], { detached: true, stdio: 'ignore' });
-        child.unref();
+        safeSpawn('explorer.exe', [`/select,${resolved}`]);
       } else {
-        const child = spawn('cmd.exe', ['/c', 'start', '""', resolved], { detached: true, stdio: 'ignore' });
-        child.unref();
+        safeSpawn('cmd.exe', ['/c', 'start', '""', resolved]);
       }
     } else if (process.platform === 'darwin') {
-      const child = spawn(revealInFolder ? 'open' : 'open', [revealInFolder ? '-R' : resolved, ...(revealInFolder ? [resolved] : [])], { detached: true, stdio: 'ignore' });
-      child.unref();
+      safeSpawn(revealInFolder ? 'open' : 'open', [revealInFolder ? '-R' : resolved, ...(revealInFolder ? [resolved] : [])]);
     } else {
-      const child = spawn('xdg-open', [resolved], { detached: true, stdio: 'ignore' });
-      child.unref();
+      safeSpawn('xdg-open', [resolved]);
     }
 
     res.json({
@@ -2945,8 +3022,7 @@ app.post('/api/actions/open-setting', async (req: Request, res: Response) => {
     }
 
     if (process.platform === 'win32' && uri.startsWith('ms-settings:')) {
-      const child = spawn('cmd.exe', ['/c', 'start', uri], { detached: true, stdio: 'ignore' });
-      child.unref();
+      safeSpawn('cmd.exe', ['/c', 'start', uri]);
       res.json({ success: true, message: `Dispatched Windows Settings: ${uri}` });
       return;
     }
