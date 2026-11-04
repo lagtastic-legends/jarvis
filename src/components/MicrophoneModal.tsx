@@ -7,8 +7,12 @@ import {
   Radio, 
   ArrowRight, 
   Sparkles,
-  RefreshCw
+  RefreshCw,
+  Cpu,
+  ShieldAlert,
+  Loader2
 } from 'lucide-react';
+import { api } from '../services/api';
 
 interface MicrophoneModalProps {
   isOpen: boolean;
@@ -23,29 +27,58 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
   onDirectiveCaptured,
   onBargeIn,
 }) => {
-  const [status, setStatus] = useState<'idle' | 'listening' | 'processing' | 'unsupported' | 'denied'>('idle');
+  const [status, setStatus] = useState<
+    'idle' | 'listening' | 'transcribing' | 'processing' | 'unsupported' | 'denied' | 'insecure'
+  >('idle');
   const [transcript, setTranscript] = useState<string>('');
   const [interimText, setInterimText] = useState<string>('');
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [audioLevel, setAudioLevel] = useState<number>(0);
   const [manualInput, setManualInput] = useState<string>('');
+  const [hasDetectedVoice, setHasDetectedVoice] = useState<boolean>(false);
+  const [activeEngine, setActiveEngine] = useState<'webspeech' | 'gemini_fallback'>('webspeech');
 
+  // Callback refs to decouple from parent re-render ticks (LOOP 1)
+  const onCloseRef = useRef(onClose);
+  const onDirectiveCapturedRef = useRef(onDirectiveCaptured);
+  const onBargeInRef = useRef(onBargeIn);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+    onDirectiveCapturedRef.current = onDirectiveCaptured;
+    onBargeInRef.current = onBargeIn;
+  });
+
+  // Audio & Hardware Refs
   const recognitionRef = useRef<any>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const audioChunksRef = useRef<Blob[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const silenceTimerRef = useRef<any>(null);
+  const restartDebounceRef = useRef<any>(null);
+
+  // State Tracking Refs
   const finalTranscriptRef = useRef<string>('');
   const isListeningRef = useRef<boolean>(false);
+  const isRecognitionRunningRef = useRef<boolean>(false);
+  const hasDetectedVoiceRef = useRef<boolean>(false);
+  const lastVoiceTimestampRef = useRef<number>(0);
 
-  // Stable cleanup helper
+  // Stable Full Cleanup Helper
   const stopAllAudio = useCallback(() => {
     isListeningRef.current = false;
+    isRecognitionRunningRef.current = false;
 
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
+    }
+    if (restartDebounceRef.current) {
+      clearTimeout(restartDebounceRef.current);
+      restartDebounceRef.current = null;
     }
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
@@ -58,6 +91,14 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
         // Ignore
       }
       recognitionRef.current = null;
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try {
+        mediaRecorderRef.current.stop();
+      } catch {
+        // Ignore
+      }
+      mediaRecorderRef.current = null;
     }
     if (mediaStreamRef.current) {
       try {
@@ -78,40 +119,115 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
     setAudioLevel(0);
   }, []);
 
-  // Submit recognized directive
-  const handleCommitDirective = useCallback((textToCommit: string) => {
+  // Commit Directive to Parent (Using pinned callback ref)
+  const commitText = useCallback((textToCommit: string) => {
     const cleaned = textToCommit.trim();
     if (!cleaned) return;
     setStatus('processing');
     stopAllAudio();
     setTimeout(() => {
-      onDirectiveCaptured(cleaned);
-      onClose();
-    }, 200);
-  }, [stopAllAudio, onDirectiveCaptured, onClose]);
+      onDirectiveCapturedRef.current(cleaned);
+      onCloseRef.current();
+    }, 150);
+  }, [stopAllAudio]);
+
+  // Transcribe recorded audio chunks with Gemini Multimodal Audio (LOOP 2 & 3)
+  const transcribeWithGemini = useCallback(async (): Promise<string> => {
+    if (!audioChunksRef.current || audioChunksRef.current.length === 0) return '';
+    setStatus('transcribing');
+    setActiveEngine('gemini_fallback');
+
+    try {
+      const mimeType = mediaRecorderRef.current?.mimeType || 'audio/webm';
+      const audioBlob = new Blob(audioChunksRef.current, { type: mimeType });
+
+      return await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          try {
+            const dataUrl = reader.result as string;
+            const base64 = dataUrl.split(',')[1] || '';
+            if (!base64) {
+              resolve('');
+              return;
+            }
+            const serverText = await api.transcribeAudio(base64, mimeType);
+            resolve(serverText.trim());
+          } catch {
+            resolve('');
+          }
+        };
+        reader.onerror = () => resolve('');
+        reader.readAsDataURL(audioBlob);
+      });
+    } catch {
+      return '';
+    }
+  }, []);
+
+  // Primary Directive Commit Handler (Web Speech or Gemini Fallback)
+  const handleCommit = useCallback(async (forcedText?: string) => {
+    const explicitText = (forcedText || manualInput || finalTranscriptRef.current || interimText).trim();
+
+    if (explicitText) {
+      commitText(explicitText);
+      return;
+    }
+
+    // If no text was recognized yet but acoustic voice was detected, invoke Gemini audio transcription
+    if (hasDetectedVoiceRef.current && audioChunksRef.current.length > 0) {
+      setStatus('transcribing');
+      const geminiText = await transcribeWithGemini();
+      if (geminiText) {
+        setTranscript(geminiText);
+        commitText(geminiText);
+        return;
+      }
+    }
+
+    setStatus('listening');
+  }, [manualInput, interimText, commitText, transcribeWithGemini]);
 
   // Start real speech recognition and audio analysis
   const startListening = useCallback(async () => {
     stopAllAudio();
     isListeningRef.current = true;
+    hasDetectedVoiceRef.current = false;
+    setHasDetectedVoice(false);
     setStatus('listening');
     setTranscript('');
     setInterimText('');
     setManualInput('');
     setErrorMessage('');
+    setActiveEngine('webspeech');
     finalTranscriptRef.current = '';
+    audioChunksRef.current = [];
 
-    // Notify parent to stop any outgoing speech (barge-in)
-    if (onBargeIn) {
+    // Trigger parent barge-in if active (safe without state thrashing)
+    if (onBargeInRef.current) {
       try {
-        onBargeIn();
+        onBargeInRef.current();
       } catch {
         // Ignore
       }
     }
 
+    // LOOP 4: Check window.isSecureContext for LAN / Mobile IP security requirements
+    const isLocalhost =
+      typeof window !== 'undefined' &&
+      (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+    const isSecure = typeof window !== 'undefined' && (window.isSecureContext || isLocalhost);
+
+    if (!isSecure) {
+      setStatus('insecure');
+      setErrorMessage(
+        `Insecure Origin (${window.location.origin}). Browsers block mic access over plain HTTP on LAN IPs.`
+      );
+      return;
+    }
+
     try {
-      // 1. Microphone Audio Stream & Volume Analyser
+      // 1. Microphone Audio Stream
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         throw new Error('MediaDevices microphone API is not supported in this browser.');
       }
@@ -124,7 +240,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
         },
       });
 
-      // Verify we are still supposed to be listening (not closed during await)
+      // Verify we are still supposed to be listening (not closed during async prompt)
       if (!isListeningRef.current) {
         stream.getTracks().forEach((t) => t.stop());
         return;
@@ -132,18 +248,44 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
 
       mediaStreamRef.current = stream;
 
-      // 2. AudioContext & Spectrum Analyser
+      // 2. Parallel MediaRecorder for Gemini Multimodal Audio Fallback (LOOP 3)
+      let recorderMime = 'audio/webm;codecs=opus';
+      if (typeof MediaRecorder !== 'undefined') {
+        if (!MediaRecorder.isTypeSupported('audio/webm;codecs=opus')) {
+          if (MediaRecorder.isTypeSupported('audio/webm')) recorderMime = 'audio/webm';
+          else if (MediaRecorder.isTypeSupported('audio/mp4')) recorderMime = 'audio/mp4';
+          else recorderMime = '';
+        }
+
+        try {
+          const recorder = recorderMime
+            ? new MediaRecorder(stream, { mimeType: recorderMime })
+            : new MediaRecorder(stream);
+          mediaRecorderRef.current = recorder;
+
+          recorder.ondataavailable = (event) => {
+            if (event.data && event.data.size > 0) {
+              audioChunksRef.current.push(event.data);
+            }
+          };
+
+          recorder.start(250); // Collect 250ms audio timeslices
+        } catch (recErr) {
+          console.warn('[MEDIA_RECORDER] Parallel recording unavailable:', recErr);
+        }
+      }
+
+      // 3. AudioContext & Spectrum Analyser (VAD & Holographic Visualizer)
       const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
       if (AudioContextClass) {
         const audioCtx = new AudioContextClass();
         audioContextRef.current = audioCtx;
 
-        // Modern browsers require explicit resume
         if (audioCtx.state === 'suspended') {
           try {
             await audioCtx.resume();
           } catch (ctxErr) {
-            console.warn('[MIC] AudioContext resume failed:', ctxErr);
+            console.warn('[MIC] AudioContext resume note:', ctxErr);
           }
         }
 
@@ -171,98 +313,130 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
           // Responsive volume normalization with speech sensitivity boost
           const norm = Math.min(1, Math.max(avg / 35, maxVal / 140));
           setAudioLevel(norm);
+
+          // Acoustic Voice Activity Detection (VAD)
+          if (norm > 0.12) {
+            hasDetectedVoiceRef.current = true;
+            setHasDetectedVoice(true);
+            lastVoiceTimestampRef.current = Date.now();
+          }
+
           animFrameRef.current = requestAnimationFrame(updateLevel);
         };
         updateLevel();
       }
 
-      // 3. Web Speech API Recognition
+      // 4. Web Speech API Recognition with Full Lifecycle Handling (LOOP 3)
       const SpeechRecognitionClass =
         (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 
-      if (!SpeechRecognitionClass) {
-        setStatus('unsupported');
-        return;
-      }
+      if (SpeechRecognitionClass) {
+        const recognition = new SpeechRecognitionClass();
+        recognitionRef.current = recognition;
+        recognition.continuous = true;
+        recognition.interimResults = true;
+        recognition.lang = 'en-US';
 
-      const recognition = new SpeechRecognitionClass();
-      recognitionRef.current = recognition;
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = 'en-US';
+        recognition.onstart = () => {
+          isRecognitionRunningRef.current = true;
+        };
 
-      recognition.onresult = (event: any) => {
-        let interim = '';
-        let currentFinal = finalTranscriptRef.current;
+        recognition.onaudiostart = () => {
+          isRecognitionRunningRef.current = true;
+        };
 
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const trans = event.results[i][0].transcript;
-          if (event.results[i].isFinal) {
-            currentFinal = (currentFinal ? currentFinal + ' ' : '') + trans.trim();
-            finalTranscriptRef.current = currentFinal;
-          } else {
-            interim += trans;
-          }
-        }
+        recognition.onspeechstart = () => {
+          hasDetectedVoiceRef.current = true;
+          setHasDetectedVoice(true);
+        };
 
-        setTranscript(currentFinal);
-        setInterimText(interim);
+        recognition.onresult = (event: any) => {
+          let interim = '';
+          let currentFinal = finalTranscriptRef.current;
 
-        const totalActiveText = (currentFinal + ' ' + interim).trim();
-
-        // Reset silence detection timer
-        if (silenceTimerRef.current) {
-          clearTimeout(silenceTimerRef.current);
-        }
-
-        if (totalActiveText.length > 2) {
-          // If 1.8s of silence follows speech, auto-commit
-          silenceTimerRef.current = setTimeout(() => {
-            if (isListeningRef.current) {
-              const final = (finalTranscriptRef.current || interim).trim();
-              if (final) {
-                handleCommitDirective(final);
-              }
+          for (let i = event.resultIndex; i < event.results.length; i++) {
+            const trans = event.results[i][0].transcript;
+            if (event.results[i].isFinal) {
+              currentFinal = (currentFinal ? currentFinal + ' ' : '') + trans.trim();
+              finalTranscriptRef.current = currentFinal;
+            } else {
+              interim += trans;
             }
-          }, 1800);
-        }
-      };
-
-      recognition.onerror = (err: any) => {
-        console.warn('[SPEECH_REC] Recognition event:', err.error);
-        if (err.error === 'not-allowed' || err.error === 'service-not-allowed') {
-          setStatus('denied');
-          setErrorMessage('Microphone access was denied by browser or system permissions.');
-        } else if (err.error === 'network') {
-          setErrorMessage('Web Speech cloud service network anomaly. You can also type or use quick directives.');
-        }
-        // 'no-speech' is normal during pauses; onend will automatically restart if still active
-      };
-
-      recognition.onend = () => {
-        // Reliably inspect ref instead of stale closure
-        if (isListeningRef.current && mediaStreamRef.current) {
-          try {
-            recognition.start();
-          } catch {
-            // Already active or restarting
           }
-        }
-      };
 
-      try {
-        recognition.start();
-      } catch (recStartErr) {
-        console.warn('[SPEECH_REC] Start warning:', recStartErr);
+          setTranscript(currentFinal);
+          setInterimText(interim);
+          hasDetectedVoiceRef.current = true;
+          setHasDetectedVoice(true);
+
+          const totalActiveText = (currentFinal + ' ' + interim).trim();
+
+          // Reset silence detection timer
+          if (silenceTimerRef.current) {
+            clearTimeout(silenceTimerRef.current);
+          }
+
+          if (totalActiveText.length > 2) {
+            // Auto-commit on 1.8s of silence following speech
+            silenceTimerRef.current = setTimeout(() => {
+              if (isListeningRef.current) {
+                const final = (finalTranscriptRef.current || interim).trim();
+                if (final) {
+                  commitText(final);
+                }
+              }
+            }, 1800);
+          }
+        };
+
+        recognition.onerror = (err: any) => {
+          console.warn('[SPEECH_REC] Event warning:', err.error);
+          if (err.error === 'not-allowed' || err.error === 'service-not-allowed') {
+            setStatus('denied');
+            setErrorMessage('Microphone access was denied by browser or system permissions.');
+          } else if (err.error === 'network' || err.error === 'audio-capture') {
+            // Fallback gracefully to Gemini audio transcription instead of failing
+            setActiveEngine('gemini_fallback');
+            setErrorMessage(
+              `Web Speech error (${err.error}). Hybrid Gemini Audio Transcription active.`
+            );
+          }
+        };
+
+        recognition.onend = () => {
+          isRecognitionRunningRef.current = false;
+          // Safe restart debounce check to eliminate InvalidStateError
+          if (isListeningRef.current && mediaStreamRef.current) {
+            if (restartDebounceRef.current) clearTimeout(restartDebounceRef.current);
+            restartDebounceRef.current = setTimeout(() => {
+              if (isListeningRef.current && !isRecognitionRunningRef.current && recognitionRef.current) {
+                try {
+                  recognitionRef.current.start();
+                } catch {
+                  // Ignore if already active
+                }
+              }
+            }, 250);
+          }
+        };
+
+        try {
+          recognition.start();
+        } catch (recStartErr) {
+          console.warn('[SPEECH_REC] Initial start warning:', recStartErr);
+        }
+      } else {
+        // Browser does not support Web Speech API natively (e.g. Firefox)
+        setActiveEngine('gemini_fallback');
       }
     } catch (err: any) {
       console.warn('[MIC] Initialization error:', err);
       setStatus('denied');
       setErrorMessage(err.message || 'Unable to access microphone stream.');
     }
-  }, [stopAllAudio, onBargeIn, handleCommitDirective]);
+  }, [stopAllAudio, commitText]);
 
-  // Handle modal open/close cleanly without dependency feedback loops
+  // Main lifecycle: depends STRICTLY on isOpen to eliminate 5-second telemetry teardown loop (LOOP 1)
   useEffect(() => {
     if (isOpen) {
       startListening();
@@ -272,6 +446,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
       setTranscript('');
       setInterimText('');
       setManualInput('');
+      setHasDetectedVoice(false);
     }
     return () => {
       stopAllAudio();
@@ -281,6 +456,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
   if (!isOpen) return null;
 
   const currentDisplay = manualInput || (transcript + ' ' + interimText).trim();
+  const isTranscribing = status === 'transcribing';
 
   const quickDirectives = [
     'Initiate perimeter scan',
@@ -295,7 +471,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
         <button
           onClick={() => {
             stopAllAudio();
-            onClose();
+            onCloseRef.current();
           }}
           className="absolute top-4 right-4 text-slate-400 hover:text-white transition-colors"
         >
@@ -314,26 +490,41 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
             )}
           </div>
           <div>
-            <h3 className="font-mono text-base font-bold text-slate-100 flex items-center gap-2">
-              <span>Acoustic Sensor Stream</span>
+            <div className="flex items-center gap-2">
+              <h3 className="font-mono text-base font-bold text-slate-100">
+                Acoustic Sensor Stream
+              </h3>
               {status === 'listening' && (
                 <span className="flex items-center gap-1 text-[10px] font-mono text-cyan-400 bg-cyan-950/60 border border-cyan-500/30 px-2 py-0.5 rounded-full">
                   <Radio className="w-3 h-3 animate-pulse text-cyan-400" />
                   LIVE LISTENING
                 </span>
               )}
-            </h3>
+              {isTranscribing && (
+                <span className="flex items-center gap-1 text-[10px] font-mono text-purple-300 bg-purple-950/60 border border-purple-500/30 px-2 py-0.5 rounded-full">
+                  <Cpu className="w-3 h-3 animate-spin text-purple-400" />
+                  GEMINI STT
+                </span>
+              )}
+            </div>
             <p className="text-xs font-mono text-cyan-400/70">
-              Continuous Real-Time Voice Comprehension
+              {activeEngine === 'gemini_fallback'
+                ? 'Hybrid Gemini Neural Audio Transcription Pipeline'
+                : 'Continuous Dual-Engine Voice Comprehension (Web Speech + Gemini Audio)'}
             </p>
           </div>
         </div>
 
         {/* Live Audio Amplitude Visualizer */}
-        {status === 'listening' && (
+        {(status === 'listening' || isTranscribing) && (
           <div className="p-3.5 rounded-xl border border-cyan-500/20 bg-slate-900/60 space-y-2">
             <div className="flex items-center justify-between text-[10px] font-mono text-slate-400">
-              <span>MIC INPUT LEVEL</span>
+              <span className="flex items-center gap-1.5">
+                <span>MIC INPUT LEVEL</span>
+                {hasDetectedVoice && (
+                  <span className="text-emerald-400 font-bold tracking-wider">[VOICE DETECTED]</span>
+                )}
+              </span>
               <span className="text-cyan-300 font-bold">
                 {Math.round(audioLevel * 100)}% AMPLITUDE
               </span>
@@ -364,7 +555,14 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
         {/* Real-time Transcription & Directive Input Box */}
         <div className="space-y-2">
           <div className="min-h-[100px] max-h-48 overflow-y-auto p-4 rounded-xl border border-cyan-500/30 bg-slate-900/80 flex flex-col justify-center">
-            {currentDisplay ? (
+            {isTranscribing ? (
+              <div className="flex flex-col items-center justify-center gap-2 py-3 text-cyan-300">
+                <Loader2 className="w-6 h-6 animate-spin text-cyan-400" />
+                <span className="font-mono text-xs tracking-wider uppercase">
+                  Processing Audio via Gemini Multimodal STT...
+                </span>
+              </div>
+            ) : currentDisplay ? (
               <p className="font-mono text-sm text-cyan-200 leading-relaxed font-semibold">
                 "{currentDisplay}"
               </p>
@@ -372,10 +570,23 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
               <p className="font-mono text-xs text-slate-500 italic text-center">
                 Speak now... JARVIS is listening for your command.
               </p>
+            ) : status === 'insecure' ? (
+              <div className="space-y-2 text-center p-2">
+                <ShieldAlert className="w-6 h-6 text-amber-400 mx-auto" />
+                <p className="font-mono text-xs text-amber-300 font-bold">
+                  Insecure Context Detected (Plain HTTP)
+                </p>
+                <p className="text-[11px] font-mono text-slate-300">
+                  Chromium blocks microphone access on non-localhost HTTP addresses. You can type directly below, or enable:
+                </p>
+                <code className="block text-[10px] font-mono text-cyan-300 bg-slate-950 px-2 py-1 rounded border border-cyan-500/30 select-all">
+                  chrome://flags/#unsafely-treat-insecure-origin-as-secure
+                </code>
+              </div>
             ) : status === 'unsupported' ? (
               <div className="space-y-2 text-center">
                 <p className="font-mono text-xs text-amber-300">
-                  Web Speech API is not supported in this browser environment.
+                  Web Speech API is not supported in this browser. Fallback typing active.
                 </p>
               </div>
             ) : null}
@@ -388,8 +599,8 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
               value={manualInput}
               onChange={(e) => setManualInput(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && currentDisplay) {
-                  handleCommitDirective(currentDisplay);
+                if (e.key === 'Enter') {
+                  handleCommit();
                 }
               }}
               placeholder="Or type/edit directive directly..."
@@ -417,7 +628,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
               <button
                 type="button"
                 key={cmd}
-                onClick={() => handleCommitDirective(cmd)}
+                onClick={() => handleCommit(cmd)}
                 className="flex items-center gap-1 px-2.5 py-1 rounded-lg border border-cyan-500/25 bg-slate-900/60 hover:bg-cyan-950/60 hover:border-cyan-400/50 text-[11px] font-mono text-cyan-300 transition-all"
               >
                 <Sparkles className="w-3 h-3 text-cyan-400" />
@@ -453,7 +664,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
           <button
             onClick={() => {
               stopAllAudio();
-              onClose();
+              onCloseRef.current();
             }}
             className="px-4 py-2 rounded-xl text-xs font-mono text-slate-400 hover:text-white hover:bg-white/5 transition-colors"
           >
@@ -461,7 +672,7 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
           </button>
 
           <div className="flex items-center gap-2">
-            {status === 'denied' && (
+            {(status === 'denied' || status === 'insecure') && (
               <button
                 type="button"
                 onClick={startListening}
@@ -473,17 +684,21 @@ export const MicrophoneModal: React.FC<MicrophoneModalProps> = ({
             )}
 
             <button
-              onClick={() => {
-                const toCommit = currentDisplay;
-                if (toCommit) {
-                  handleCommitDirective(toCommit);
-                }
-              }}
-              disabled={!currentDisplay}
+              onClick={() => handleCommit()}
+              disabled={!currentDisplay && !hasDetectedVoice && !isTranscribing}
               className="px-5 py-2.5 rounded-xl text-xs font-mono font-bold bg-cyan-500 hover:bg-cyan-400 text-black shadow-glow-cyan transition-all disabled:opacity-40 flex items-center gap-1.5"
             >
-              <span>Engage Directive</span>
-              <ArrowRight className="w-3.5 h-3.5" />
+              {isTranscribing ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Transcribing...</span>
+                </>
+              ) : (
+                <>
+                  <span>{hasDetectedVoice && !currentDisplay ? 'Transcribe Audio' : 'Engage Directive'}</span>
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </>
+              )}
             </button>
           </div>
         </div>

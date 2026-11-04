@@ -36,7 +36,8 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 
 const app = express();
 app.use(cors({ origin: true, credentials: true }));
-app.use(express.json());
+app.use(express.json({ limit: '25mb' }));
+app.use(express.urlencoded({ limit: '25mb', extended: true }));
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/api/ws' });
@@ -1506,6 +1507,92 @@ app.post('/api/webrtc/token', async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ==============================================================================
+// 2B. MULTIMODAL AUDIO TRANSCRIPTION (LOOP 2)
+// ==============================================================================
+app.post('/api/voice/transcribe', async (req: Request, res: Response) => {
+  try {
+    const { audioBase64, mimeType = 'audio/webm' } = req.body;
+    if (!audioBase64 || typeof audioBase64 !== 'string') {
+      res.status(400).json({ success: false, error: 'audioBase64 payload is required' });
+      return;
+    }
+
+    if (!GEMINI_API_KEY) {
+      res.status(500).json({ success: false, error: 'GEMINI_API_KEY is not configured on server' });
+      return;
+    }
+
+    const cleanBase64 = audioBase64.replace(/^data:[^;]+;base64,/, '');
+
+    const candidateModels = [
+      'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite',
+      'gemini-2.5-flash',
+      'gemini-3.8-flash',
+    ];
+
+    let transcript = '';
+    let success = false;
+    let lastError = '';
+
+    for (const model of candidateModels) {
+      try {
+        const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+        const resp = await fetch(geminiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: AbortSignal.timeout(12000),
+          body: JSON.stringify({
+            contents: [
+              {
+                parts: [
+                  {
+                    text: 'Transcribe the spoken audio accurately into plain text. Output ONLY the exact spoken words without quotes, markdown, or commentary. If the audio is completely silent or indecipherable noise, output an empty string.',
+                  },
+                  {
+                    inlineData: {
+                      mimeType: (mimeType || 'audio/webm').split(';')[0],
+                      data: cleanBase64,
+                    },
+                  },
+                ],
+              },
+            ],
+            generationConfig: {
+              temperature: 0.1,
+              maxOutputTokens: 256,
+            },
+          }),
+        });
+
+        if (resp.ok) {
+          const data = await resp.json();
+          const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+          transcript = text.trim();
+          success = true;
+          break;
+        } else {
+          lastError = `Model ${model} returned HTTP ${resp.status}`;
+          console.warn(`[VOICE_TRANSCRIBE] ${lastError}`);
+        }
+      } catch (err: any) {
+        lastError = err.message;
+        console.warn(`[VOICE_TRANSCRIBE] Error with model ${model}:`, err.message);
+      }
+    }
+
+    if (success) {
+      res.json({ success: true, transcript });
+    } else {
+      res.status(502).json({ success: false, error: `Transcription failed: ${lastError}`, transcript: '' });
+    }
+  } catch (error: any) {
+    console.error('[VOICE_TRANSCRIBE] Fatal endpoint error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

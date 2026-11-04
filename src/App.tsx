@@ -113,16 +113,26 @@ export const App: React.FC = () => {
   }, [sfxEnabled]);
 
   // Barge-in / Interrupt active AI streaming or speech playback
-  const handleBargeIn = useCallback(() => {
+  const handleBargeIn = useCallback((forListening: boolean = false) => {
     if (activeAbortControllerRef.current) {
       activeAbortControllerRef.current.abort();
       activeAbortControllerRef.current = null;
     }
     speechEngine.stop();
-    transitionAiState('INTERRUPTED');
-    setTimeout(() => {
-      transitionAiState('IDLE');
-    }, 450);
+    if (forListening) {
+      transitionAiState('LISTENING', true);
+    } else {
+      transitionAiState('INTERRUPTED');
+      setTimeout(() => {
+        transitionAiState('IDLE');
+      }, 450);
+    }
+  }, [transitionAiState]);
+
+  // Stable memoized modal callbacks to prevent re-render cascades
+  const handleCloseMicModal = useCallback(() => {
+    setMicModalOpen(false);
+    transitionAiState('IDLE', true);
   }, [transitionAiState]);
 
   // Initial load: Telemetry WebSocket, Memories, Tasks, Action Queue
@@ -555,11 +565,9 @@ export const App: React.FC = () => {
       {/* Modals */}
       <MicrophoneModal
         isOpen={micModalOpen}
-        onClose={() => setMicModalOpen(false)}
-        onDirectiveCaptured={(transcript) => {
-          handleSendDirective(transcript);
-        }}
-        onBargeIn={handleBargeIn}
+        onClose={handleCloseMicModal}
+        onDirectiveCaptured={handleSendDirective}
+        onBargeIn={() => handleBargeIn(true)}
       />
 
       <ActionApprovalModal

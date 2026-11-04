@@ -110,6 +110,26 @@ export class JarvisApiClient {
     }
   }
 
+  // Server-Side Gemini Multimodal Audio Transcription (LOOP 2)
+  public async transcribeAudio(audioBase64: string, mimeType: string = 'audio/webm'): Promise<string> {
+    try {
+      const res = await fetch(`${API_BASE}/api/voice/transcribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audioBase64, mimeType }),
+        signal: AbortSignal.timeout(15000),
+      });
+      const data = await res.json();
+      if (data.success && typeof data.transcript === 'string') {
+        return data.transcript.trim();
+      }
+      return '';
+    } catch (err) {
+      console.warn('[API] Audio transcription failed:', err);
+      return '';
+    }
+  }
+
   /**
    * Real-Time SSE Streaming Chat
    * Connects to /api/chat/stream, streams token chunks, and reports final text
