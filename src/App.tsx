@@ -484,6 +484,7 @@ export const App: React.FC = () => {
               onClearLog={() => setMessages([])}
               isThinking={aiState === 'THINKING'}
               onNavigateTab={(tab) => setActiveTab(tab as TabId)}
+              onOpenMicModal={() => setMicModalOpen(true)}
             />
           )}
 

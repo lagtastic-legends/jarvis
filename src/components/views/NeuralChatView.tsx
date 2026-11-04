@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Terminal, Send, Trash2, Sparkles, User, Bot } from 'lucide-react';
+import { Terminal, Send, Trash2, Sparkles, User, Bot, Mic } from 'lucide-react';
 import { ChatMessage } from '../../types/jarvis';
 import { ActionCard } from '../ActionCard';
 
@@ -9,6 +9,7 @@ interface NeuralChatViewProps {
   onClearLog: () => void;
   isThinking: boolean;
   onNavigateTab?: (tab: string) => void;
+  onOpenMicModal?: () => void;
 }
 
 export const NeuralChatView: React.FC<NeuralChatViewProps> = ({
@@ -17,6 +18,7 @@ export const NeuralChatView: React.FC<NeuralChatViewProps> = ({
   onClearLog,
   isThinking,
   onNavigateTab,
+  onOpenMicModal,
 }) => {
   const [input, setInput] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -143,6 +145,16 @@ export const NeuralChatView: React.FC<NeuralChatViewProps> = ({
 
       {/* Input Form */}
       <form onSubmit={handleSubmit} className="pt-3 border-t border-jarvis-border/40 flex gap-2">
+        {onOpenMicModal && (
+          <button
+            type="button"
+            onClick={onOpenMicModal}
+            title="Speak Directive"
+            className="p-2.5 rounded-xl border border-cyan-500/30 text-cyan-300 hover:bg-cyan-500/15 transition-all"
+          >
+            <Mic className="w-4 h-4" />
+          </button>
+        )}
         <input
           type="text"
           value={input}
