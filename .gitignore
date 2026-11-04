@@ -13,6 +13,13 @@ build/
 .env.development.local
 .env.test.local
 .env.production.local
+.jarvis_loop_state.json
+
+# Android Artifacts
+*.apk
+*.aab
+*.keystore
+*.jks
 
 # Logs
 *.log
