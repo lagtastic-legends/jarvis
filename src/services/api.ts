@@ -149,20 +149,30 @@ export class JarvisApiClient {
     signal?: AbortSignal,
     visualPayload?: VisualPayload
   ): Promise<string> {
+    const fetchPayload = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message,
+        conversationId,
+        history,
+        imageBase64: visualPayload?.imageBase64,
+        imageMimeType: visualPayload?.imageMimeType,
+        visualSource: visualPayload?.visualSource,
+      }),
+      signal,
+    };
+
     try {
-      const res = await fetch(`${API_BASE}/api/chat/stream`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message,
-          conversationId,
-          history,
-          imageBase64: visualPayload?.imageBase64,
-          imageMimeType: visualPayload?.imageMimeType,
-          visualSource: visualPayload?.visualSource,
-        }),
-        signal,
-      });
+      let res: Response;
+      try {
+        res = await fetch(`${API_BASE}/api/chat/stream`, fetchPayload);
+      } catch (fetchErr: any) {
+        if (signal?.aborted) throw fetchErr;
+        // Automatic 1.5s retry loop in case the auto-spawned backend was warming up
+        await new Promise((r) => setTimeout(r, 1500));
+        res = await fetch(`${API_BASE}/api/chat/stream`, fetchPayload);
+      }
 
       if (!res.ok) {
         throw new Error(`Server returned HTTP ${res.status}`);
@@ -243,8 +253,7 @@ export class JarvisApiClient {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 30000);
-
-      const res = await fetch(`${API_BASE}/api/chat`, {
+      const fetchPayload = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -256,7 +265,16 @@ export class JarvisApiClient {
           visualSource: visualPayload?.visualSource,
         }),
         signal: controller.signal,
-      });
+      };
+
+      let res: Response;
+      try {
+        res = await fetch(`${API_BASE}/api/chat`, fetchPayload);
+      } catch (fetchErr) {
+        // Automatic 1.5s retry loop
+        await new Promise((r) => setTimeout(r, 1500));
+        res = await fetch(`${API_BASE}/api/chat`, fetchPayload);
+      }
 
       clearTimeout(timeoutId);
 
