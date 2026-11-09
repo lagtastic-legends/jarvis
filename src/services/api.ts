@@ -9,7 +9,13 @@ export const getApiBase = (): string => {
     return import.meta.env.VITE_API_URL;
   }
   if (typeof window !== 'undefined' && window.location && window.location.hostname) {
-    return `http://${window.location.hostname}:3001`;
+    // If running in production (served directly on port 3001, or behind a reverse proxy / Cloudflare tunnel)
+    if (window.location.port === '3001' || !window.location.port || window.location.port === '80' || window.location.port === '443') {
+      return window.location.origin;
+    }
+    // In local Vite dev mode on port 5173, point to backend on port 3001
+    const proto = window.location.protocol || 'http:';
+    return `${proto}//${window.location.hostname}:3001`;
   }
   return 'http://localhost:3001';
 };

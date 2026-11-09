@@ -11,6 +11,10 @@ import nodemailer, { Transporter } from 'nodemailer';
 import path from 'path';
 import os from 'os';
 import fs, { promises as fsPromises } from 'fs';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const execPromise = util.promisify(exec);
 
@@ -3498,6 +3502,20 @@ app.post('/api/routines/execute', async (req: Request, res: Response) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// ==============================================================================
+// 24/7 PRODUCTION STATIC FRONTEND HOSTING (SINGLE-PORT SERVING)
+// ==============================================================================
+const distPath = path.join(__dirname, 'dist');
+if (fs.existsSync(distPath)) {
+  app.use(express.static(distPath));
+  app.get('*', (req: Request, res: Response, next: any) => {
+    if (req.path.startsWith('/api') || req.path.startsWith('/ws')) {
+      return next();
+    }
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+}
 
 // Start listening
 server.listen(PORT, () => {
