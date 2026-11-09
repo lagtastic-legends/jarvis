@@ -7,9 +7,9 @@ echo ========================================================
 echo.
 
 cd /d "%~dp0"
-
-:: Open the browser immediately to the frontend
-start "" http://localhost:5173
-
-:: Start the unified dev server (Vite + Auto-Backend on 3001)
-npm run dev
+node scripts\start-jarvis.js
+if %ERRORLEVEL% NEQ 0 (
+  echo.
+  echo [ERROR] JARVIS encountered an unexpected startup exit code.
+  pause
+)

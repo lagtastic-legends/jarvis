@@ -8,14 +8,11 @@ export const getApiBase = (): string => {
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
   }
-  if (typeof window !== 'undefined' && window.location && window.location.hostname) {
-    // If running in production (served directly on port 3001, or behind a reverse proxy / Cloudflare tunnel)
-    if (window.location.port === '3001' || !window.location.port || window.location.port === '80' || window.location.port === '443') {
-      return window.location.origin;
-    }
-    // In local Vite dev mode on port 5173, point to backend on port 3001
-    const proto = window.location.protocol || 'http:';
-    return `${proto}//${window.location.hostname}:3001`;
+  // In browser runtime, return relative base '' so all /api requests are routed
+  // through the Vite proxy in development or Express in production without cross-origin,
+  // SSL mismatch (https vs http), or firewall blocks.
+  if (typeof window !== 'undefined') {
+    return '';
   }
   return 'http://localhost:3001';
 };
@@ -39,7 +36,14 @@ export class JarvisApiClient {
   private connectWebSocket() {
     if (typeof window === 'undefined') return;
 
-    const wsUrl = API_BASE.replace(/^http/, 'ws') + '/api/ws';
+    let wsUrl: string;
+    if (import.meta.env.VITE_API_URL) {
+      wsUrl = import.meta.env.VITE_API_URL.replace(/^http/, 'ws') + '/api/ws';
+    } else {
+      const isHttps = window.location.protocol === 'https:';
+      const wsProto = isHttps ? 'wss:' : 'ws:';
+      wsUrl = `${wsProto}//${window.location.host}/api/ws`;
+    }
 
     try {
       this.ws = new WebSocket(wsUrl);
