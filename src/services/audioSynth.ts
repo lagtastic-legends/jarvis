@@ -1,4 +1,5 @@
 import { JarvisState } from '../types/jarvis';
+import { nativeAndroid } from './nativeAndroid';
 
 /**
  * Procedural Web Audio API Synthesizer for JARVIS Command Center
@@ -64,6 +65,7 @@ export class JarvisAudioSynth {
 
   // 1. Cyber Chirp (Button clicks, menu selection)
   public playChirp(): void {
+    nativeAndroid.triggerHaptic('light');
     if (!this.enabled || this.isMuted) return;
     this.init();
     if (!this.ctx || !this.masterGain) return;
@@ -97,6 +99,7 @@ export class JarvisAudioSynth {
     gain.connect(this.masterGain);
 
     if (state === 'IDLE') {
+      nativeAndroid.triggerHaptic('light');
       [523.25, 659.25].forEach((freq, i) => {
         const osc = this.ctx!.createOscillator();
         osc.type = 'sine';
@@ -110,6 +113,7 @@ export class JarvisAudioSynth {
         osc.stop(now + i * 0.04 + 0.2);
       });
     } else if (state === 'LISTENING') {
+      nativeAndroid.triggerHaptic('medium');
       [880, 1318.5].forEach((freq, idx) => {
         const osc = this.ctx!.createOscillator();
         osc.type = 'sine';
@@ -123,6 +127,7 @@ export class JarvisAudioSynth {
         osc.stop(now + idx * 0.06 + 0.13);
       });
     } else if (state === 'PROCESSING' || state === 'THINKING') {
+      nativeAndroid.triggerHaptic('light');
       [440, 554.37, 659.25, 880].forEach((freq, idx) => {
         const osc = this.ctx!.createOscillator();
         osc.type = 'triangle';
@@ -136,6 +141,7 @@ export class JarvisAudioSynth {
         osc.stop(now + idx * 0.035 + 0.11);
       });
     } else if (state === 'SPEAKING') {
+      nativeAndroid.triggerHaptic('success');
       [659.25, 987.77, 1318.5].forEach((freq) => {
         const osc = this.ctx!.createOscillator();
         osc.type = 'sine';
@@ -149,6 +155,7 @@ export class JarvisAudioSynth {
         osc.stop(now + 0.36);
       });
     } else if (state === 'INTERRUPTED') {
+      nativeAndroid.triggerHaptic('warning');
       [800, 400].forEach((freq, idx) => {
         const osc = this.ctx!.createOscillator();
         osc.type = 'sawtooth';
@@ -162,6 +169,7 @@ export class JarvisAudioSynth {
         osc.stop(now + idx * 0.04 + 0.09);
       });
     } else if (state === 'ERROR') {
+      nativeAndroid.triggerHaptic('error');
       this.playAlert();
     }
   }
@@ -226,6 +234,7 @@ export class JarvisAudioSynth {
 
   // 5. Tactical Threat Alert Tone
   public playAlert(): void {
+    nativeAndroid.triggerHaptic('error');
     if (!this.enabled || this.isMuted) return;
     this.init();
     if (!this.ctx || !this.masterGain) return;

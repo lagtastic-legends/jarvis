@@ -1,12 +1,21 @@
 import { MemoryItem, TaskDirective, ActionQueueItem, TelemetryData, CustomRoutine, VisualPayload } from '../types/jarvis';
 
 // Dynamic API Base URL resolution:
-// 1. Vite environment override (VITE_API_URL)
-// 2. Dynamic host matching window.location.hostname for LAN / Mobile Android testing
-// 3. Fallback to localhost:3001
+// 1. User configured custom URL (localStorage: 'jarvis_custom_api_url')
+// 2. Vite environment override (VITE_API_URL)
+// 3. Native Capacitor Android detection (emulator 10.0.2.2 fallback)
+// 4. Relative '' for browser proxy routing
 export const getApiBase = (): string => {
+  if (typeof window !== 'undefined') {
+    const custom = localStorage.getItem('jarvis_custom_api_url');
+    if (custom) return custom.replace(/\/+$/, '');
+  }
   if (import.meta.env.VITE_API_URL) {
     return import.meta.env.VITE_API_URL;
+  }
+  // If running inside Capacitor native Android container without custom URL
+  if (typeof window !== 'undefined' && (window as any).Capacitor?.isNativePlatform?.()) {
+    return 'http://10.0.2.2:3001';
   }
   // In browser runtime, return relative base '' so all /api requests are routed
   // through the Vite proxy in development or Express in production without cross-origin,
@@ -17,7 +26,14 @@ export const getApiBase = (): string => {
   return 'http://localhost:3001';
 };
 
-const API_BASE = getApiBase();
+export const getDisplayBase = (): string => {
+  const base = getApiBase();
+  if (base) return base;
+  if (typeof window !== 'undefined' && window.location.origin) {
+    return window.location.origin;
+  }
+  return 'http://localhost:3001';
+};
 
 export interface HistoryTurn {
   role: 'user' | 'model' | 'assistant';
@@ -33,16 +49,28 @@ export class JarvisApiClient {
     this.connectWebSocket();
   }
 
+  public reconnect(): void {
+    if (this.ws) {
+      try {
+        this.ws.close();
+      } catch {}
+      this.ws = null;
+    }
+    this.connectWebSocket();
+  }
+
   private connectWebSocket() {
     if (typeof window === 'undefined') return;
 
     let wsUrl: string;
-    if (import.meta.env.VITE_API_URL) {
-      wsUrl = import.meta.env.VITE_API_URL.replace(/^http/, 'ws') + '/api/ws';
+    const base = getApiBase();
+    if (base && base.startsWith('http')) {
+      wsUrl = base.replace(/^http/, 'ws') + '/api/ws';
     } else {
-      const isHttps = window.location.protocol === 'https:';
+      const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
       const wsProto = isHttps ? 'wss:' : 'ws:';
-      wsUrl = `${wsProto}//${window.location.host}/api/ws`;
+      const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3001';
+      wsUrl = `${wsProto}//${host}/api/ws`;
     }
 
     try {
@@ -87,7 +115,7 @@ export class JarvisApiClient {
   // Health Check
   public async getHealth(): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/api/health`, {
+      const res = await fetch(`${getApiBase()}/api/health`, {
         signal: AbortSignal.timeout(5000),
       });
       return await res.json();
@@ -99,7 +127,7 @@ export class JarvisApiClient {
   // Ephemeral WebRTC token
   public async getWebRtcToken(userId: string = 'usr_stark_01'): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/api/webrtc/token`, {
+      const res = await fetch(`${getApiBase()}/api/webrtc/token`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ userId }),
@@ -123,7 +151,7 @@ export class JarvisApiClient {
   // Server-Side Gemini Multimodal Audio Transcription (LOOP 2)
   public async transcribeAudio(audioBase64: string, mimeType: string = 'audio/webm'): Promise<string> {
     try {
-      const res = await fetch(`${API_BASE}/api/voice/transcribe`, {
+      const res = await fetch(`${getApiBase()}/api/voice/transcribe`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ audioBase64, mimeType }),
@@ -170,12 +198,12 @@ export class JarvisApiClient {
     try {
       let res: Response;
       try {
-        res = await fetch(`${API_BASE}/api/chat/stream`, fetchPayload);
+        res = await fetch(`${getApiBase()}/api/chat/stream`, fetchPayload);
       } catch (fetchErr: any) {
         if (signal?.aborted) throw fetchErr;
         // Automatic 1.5s retry loop in case the auto-spawned backend was warming up
         await new Promise((r) => setTimeout(r, 1500));
-        res = await fetch(`${API_BASE}/api/chat/stream`, fetchPayload);
+        res = await fetch(`${getApiBase()}/api/chat/stream`, fetchPayload);
       }
 
       if (!res.ok) {
@@ -232,7 +260,7 @@ export class JarvisApiClient {
         throw err;
       }
       console.warn('[API] Streaming failure:', err);
-      const fallbackMsg = `Intelligence server unreachable at ${API_BASE}. Please verify server is online.`;
+      const fallbackMsg = `Intelligence server unreachable at ${getDisplayBase()}. Please verify server is online.`;
       if (onChunk) onChunk(fallbackMsg);
       if (onComplete) onComplete(fallbackMsg);
       return fallbackMsg;
@@ -273,11 +301,11 @@ export class JarvisApiClient {
 
       let res: Response;
       try {
-        res = await fetch(`${API_BASE}/api/chat`, fetchPayload);
+        res = await fetch(`${getApiBase()}/api/chat`, fetchPayload);
       } catch (fetchErr) {
         // Automatic 1.5s retry loop
         await new Promise((r) => setTimeout(r, 1500));
-        res = await fetch(`${API_BASE}/api/chat`, fetchPayload);
+        res = await fetch(`${getApiBase()}/api/chat`, fetchPayload);
       }
 
       clearTimeout(timeoutId);
@@ -289,7 +317,7 @@ export class JarvisApiClient {
     } catch (err: any) {
       console.warn('[API] Server error or timeout:', err);
       return {
-        reply: `Network connection to JARVIS core server (${API_BASE}) could not be established. Please ensure server.ts is active.`,
+        reply: `Network connection to JARVIS core server (${getDisplayBase()}) could not be established. Please ensure server.ts is active.`,
         state: 'IDLE',
       };
     }
@@ -311,7 +339,7 @@ export class JarvisApiClient {
     error?: string;
   }> {
     try {
-      const res = await fetch(`${API_BASE}/api/vision/analyze`, {
+      const res = await fetch(`${getApiBase()}/api/vision/analyze`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -375,7 +403,10 @@ export class JarvisApiClient {
     ];
 
     try {
-      const url = new URL(`${API_BASE}/api/memories`);
+      const base = getApiBase();
+      const url = base
+        ? new URL(`${base}/api/memories`)
+        : new URL('/api/memories', typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3001');
       if (category) url.searchParams.set('category', category);
 
       const res = await fetch(url.toString(), {
@@ -400,7 +431,7 @@ export class JarvisApiClient {
     };
 
     try {
-      const res = await fetch(`${API_BASE}/api/memories`, {
+      const res = await fetch(`${getApiBase()}/api/memories`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(memory),
@@ -416,7 +447,7 @@ export class JarvisApiClient {
   // Delete Memory
   public async deleteMemory(id: string): Promise<boolean> {
     try {
-      const res = await fetch(`${API_BASE}/api/memories/${id}`, {
+      const res = await fetch(`${getApiBase()}/api/memories/${id}`, {
         method: 'DELETE',
         signal: AbortSignal.timeout(3000),
       });
@@ -450,7 +481,7 @@ export class JarvisApiClient {
     ];
 
     try {
-      const res = await fetch(`${API_BASE}/api/actions`, {
+      const res = await fetch(`${getApiBase()}/api/actions`, {
         signal: AbortSignal.timeout(3000),
       });
       const data = await res.json();
@@ -463,7 +494,7 @@ export class JarvisApiClient {
   // Approve Action
   public async approveAction(actionId: string): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/api/actions/approve`, {
+      const res = await fetch(`${getApiBase()}/api/actions/approve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ actionId }),
@@ -478,7 +509,7 @@ export class JarvisApiClient {
   // Reject Action
   public async rejectAction(actionId: string): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/api/actions/reject`, {
+      const res = await fetch(`${getApiBase()}/api/actions/reject`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ actionId }),
@@ -493,7 +524,7 @@ export class JarvisApiClient {
   // Direct Backend Email Status Check
   public async getEmailStatus(): Promise<{ success: boolean; configured: boolean; senderEmail?: string; mode?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/api/actions/email-status`, {
+      const res = await fetch(`${getApiBase()}/api/actions/email-status`, {
         signal: AbortSignal.timeout(3000),
       });
       return await res.json();
@@ -510,7 +541,7 @@ export class JarvisApiClient {
     body: string;
   }): Promise<{ success: boolean; messageId?: string; reply?: string; error?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/api/actions/send-email`, {
+      const res = await fetch(`${getApiBase()}/api/actions/send-email`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -535,7 +566,7 @@ export class JarvisApiClient {
   // Bixby File Open / Reveal in Folder
   public async openLocalFile(filePath: string, revealInFolder: boolean = false): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/api/actions/open-file`, {
+      const res = await fetch(`${getApiBase()}/api/actions/open-file`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ filePath, revealInFolder }),
@@ -550,7 +581,7 @@ export class JarvisApiClient {
   // Bixby OS Settings Intent Trigger
   public async openSettingUri(uri: string): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/api/actions/open-setting`, {
+      const res = await fetch(`${getApiBase()}/api/actions/open-setting`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ uri }),
@@ -592,7 +623,7 @@ export class JarvisApiClient {
     ];
 
     try {
-      const res = await fetch(`${API_BASE}/api/tasks`, {
+      const res = await fetch(`${getApiBase()}/api/tasks`, {
         signal: AbortSignal.timeout(3000),
       });
       const data = await res.json();
@@ -605,7 +636,7 @@ export class JarvisApiClient {
   // Update Task
   public async updateTask(id: string, updates: Partial<TaskDirective>): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/api/tasks/${id}`, {
+      const res = await fetch(`${getApiBase()}/api/tasks/${id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updates),
@@ -620,7 +651,7 @@ export class JarvisApiClient {
   // Fetch Custom Routines & Macros
   public async getRoutines(): Promise<CustomRoutine[]> {
     try {
-      const res = await fetch(`${API_BASE}/api/routines`, {
+      const res = await fetch(`${getApiBase()}/api/routines`, {
         signal: AbortSignal.timeout(4000),
       });
       const data = await res.json();
@@ -634,7 +665,7 @@ export class JarvisApiClient {
   // Save or Update Custom Routine
   public async saveRoutine(routine: Partial<CustomRoutine>): Promise<{ success: boolean; routine?: CustomRoutine; error?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/api/routines`, {
+      const res = await fetch(`${getApiBase()}/api/routines`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(routine),
@@ -649,7 +680,7 @@ export class JarvisApiClient {
   // Delete Custom Routine
   public async deleteRoutine(id: string): Promise<{ success: boolean; error?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/api/routines/${id}`, {
+      const res = await fetch(`${getApiBase()}/api/routines/${id}`, {
         method: 'DELETE',
         signal: AbortSignal.timeout(4000),
       });
@@ -665,7 +696,7 @@ export class JarvisApiClient {
     voiceTrigger?: string
   ): Promise<{ success: boolean; clientActions?: any[]; reply?: string; routineName?: string; error?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/api/routines/execute`, {
+      const res = await fetch(`${getApiBase()}/api/routines/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ routineId, voiceTrigger }),
@@ -680,7 +711,7 @@ export class JarvisApiClient {
   // Mark-LVI: Reversible Action Undo (Undo Stack)
   public async undoLastAction(): Promise<{ success: boolean; undoneAction?: string; message: string }> {
     try {
-      const res = await fetch(`${API_BASE}/api/actions/undo`, {
+      const res = await fetch(`${getApiBase()}/api/actions/undo`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: AbortSignal.timeout(6000),
@@ -694,7 +725,7 @@ export class JarvisApiClient {
   // Mark-LVI: Model-Proof Physical Confirmation
   public async confirmAction(confirmToken: string): Promise<{ success: boolean; message: string; result?: any }> {
     try {
-      const res = await fetch(`${API_BASE}/api/actions/confirm`, {
+      const res = await fetch(`${getApiBase()}/api/actions/confirm`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmToken }),
@@ -708,7 +739,7 @@ export class JarvisApiClient {
 
   public async cancelAction(confirmToken: string): Promise<{ success: boolean; message: string }> {
     try {
-      const res = await fetch(`${API_BASE}/api/actions/cancel`, {
+      const res = await fetch(`${getApiBase()}/api/actions/cancel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ confirmToken }),
@@ -723,7 +754,7 @@ export class JarvisApiClient {
   // Mark-LVI: Engine & Providers Configuration
   public async getEngineConfig(): Promise<{ success: boolean; config: any }> {
     try {
-      const res = await fetch(`${API_BASE}/api/engine/config`, {
+      const res = await fetch(`${getApiBase()}/api/engine/config`, {
         signal: AbortSignal.timeout(4000),
       });
       return await res.json();
@@ -741,7 +772,7 @@ export class JarvisApiClient {
 
   public async saveEngineConfig(config: any): Promise<{ success: boolean; message: string; config?: any }> {
     try {
-      const res = await fetch(`${API_BASE}/api/engine/config`, {
+      const res = await fetch(`${getApiBase()}/api/engine/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),
@@ -755,7 +786,7 @@ export class JarvisApiClient {
 
   public async testEngine(engine: string, localOpenai?: any): Promise<{ success: boolean; latencyMs: number; message: string }> {
     try {
-      const res = await fetch(`${API_BASE}/api/engine/test`, {
+      const res = await fetch(`${getApiBase()}/api/engine/test`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ engine, localOpenai }),
@@ -770,7 +801,7 @@ export class JarvisApiClient {
   // Mark-LVI: Host Wi-Fi LAN & Mobile Pairing
   public async getLanInfo(): Promise<{ success: boolean; lanIp: string; pairCode: string; pairUrl: string; hostname: string }> {
     try {
-      const res = await fetch(`${API_BASE}/api/system/lan-info`, {
+      const res = await fetch(`${getApiBase()}/api/system/lan-info`, {
         signal: AbortSignal.timeout(4000),
       });
       return await res.json();

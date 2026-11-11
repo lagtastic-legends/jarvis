@@ -2,6 +2,7 @@ import { ClientAction } from '../types/jarvis';
 import { api } from './api';
 import { visionCapture } from './visionCapture';
 import { speechEngine } from './speechEngine';
+import { nativeAndroid } from './nativeAndroid';
 
 export interface ActionExecutorCallbacks {
   onSwitchTab?: (tab: string) => void;
@@ -110,6 +111,12 @@ export class JarvisActionExecutor {
 
     if (!targetUrl && (nameLower.includes('.com') || nameLower.includes('.org') || nameLower.includes('http'))) {
       targetUrl = targetUrlOrPath?.startsWith('http') ? targetUrlOrPath : `https://${appName}`;
+    }
+
+    if (nativeAndroid.isNative() && targetUrl) {
+      nativeAndroid.launchAndroidApp(targetUrl);
+      this.callbacks.onShowToast?.(`Launching ${appName} on Android device`);
+      return { success: true, message: `Dispatched native intent for ${appName}` };
     }
 
     if (isMobile && targetUrl) {

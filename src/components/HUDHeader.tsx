@@ -7,7 +7,8 @@ import {
   Menu, 
   Radio,
   QrCode,
-  EyeOff
+  EyeOff,
+  Server
 } from 'lucide-react';
 import { JarvisState } from '../types/jarvis';
 import { visionCapture } from '../services/visionCapture';
@@ -24,6 +25,7 @@ interface HUDHeaderProps {
   pendingActionsCount: number;
   onOpenActionQueue: () => void;
   onOpenMobilePairing?: () => void;
+  onOpenServerConfig?: () => void;
   onMobileMenuToggle: () => void;
   callsign?: string;
 }
@@ -40,6 +42,7 @@ export const HUDHeader: React.FC<HUDHeaderProps> = ({
   pendingActionsCount,
   onOpenActionQueue,
   onOpenMobilePairing,
+  onOpenServerConfig,
   onMobileMenuToggle,
   callsign = 'Sir',
 }) => {
@@ -183,6 +186,17 @@ export const HUDHeader: React.FC<HUDHeaderProps> = ({
             className="p-2 rounded-lg border border-cyan-500/30 text-cyan-400 hover:text-cyan-200 hover:bg-cyan-500/10 transition-all"
           >
             <QrCode className="w-4 h-4" />
+          </button>
+        )}
+
+        {/* Gateway Server / Android Remote Link Config */}
+        {onOpenServerConfig && (
+          <button
+            onClick={onOpenServerConfig}
+            title="Configure JARVIS Gateway Server (LAN / Android / Cloudflare Tunnel)"
+            className="p-2 rounded-lg border border-cyan-500/30 text-cyan-400 hover:text-cyan-200 hover:bg-cyan-500/10 transition-all"
+          >
+            <Server className="w-4 h-4" />
           </button>
         )}
 

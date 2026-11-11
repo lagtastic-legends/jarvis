@@ -1,4 +1,5 @@
 import { VisualPayload } from '../types/jarvis';
+import { nativeAndroid } from './nativeAndroid';
 
 /**
  * Live Screen & Camera Visual Awareness Engine (Mark-LVI Screen Processor)
@@ -78,6 +79,23 @@ export class VisionCaptureService {
    * Captures an instant frame from the user's webcam or Android rear camera
    */
   public async captureCameraFrame(quality: number = 0.85): Promise<VisualPayload> {
+    // 1. Android Native Camera Capture (Capacitor)
+    if (nativeAndroid.isNative()) {
+      const nativeSnap = await nativeAndroid.captureNativePhoto();
+      if (nativeSnap) {
+        return {
+          imageBase64: nativeSnap.base64,
+          imageMimeType: nativeSnap.mimeType,
+          visualSource: 'camera',
+          width: 1920,
+          height: 1080,
+          dataUrl: `data:${nativeSnap.mimeType};base64,${nativeSnap.base64}`,
+          capturedAt: new Date().toISOString(),
+        };
+      }
+    }
+
+    // 2. Web / Browser Camera Capture
     let stream = this.cameraStream;
     let shouldCloseAfter = false;
 

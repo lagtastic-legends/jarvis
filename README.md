@@ -172,17 +172,33 @@ Automate repetitive multi-step actions and bind them to custom voice triggers:
 
 ---
 
-## 📱 How to Use JARVIS on Mobile & Tablets
+## 📱 How to Use JARVIS on Android Phones & Mobile Tablets
 
-### Option A: Install Native Android APK
-1. Download [`releases/jarvis-v2.0.0.apk`](releases/jarvis-v2.0.0.apk) directly onto your Android device.
-2. Tap the APK file to install (allow "Install unknown apps" if prompted).
-3. Open JARVIS on your phone for a full-screen, native mobile experience.
+JARVIS features a full native Android Companion build powered by **Capacitor 8** with deep hardware access:
+* 📷 **Native Camera Feed:** Direct Android Camera activity integration (`@capacitor/camera`) for optical scene awareness without webview permission blocks.
+* 📳 **Tactile Haptic Feedback:** Physical vibration pulses on state changes (`LISTENING`, `SPEAKING`, `ERROR`) and touch clicks (`@capacitor/haptics`).
+* 🌌 **Edge-to-Edge HUD:** Dark transparent status bar styling (`@capacitor/status-bar`).
+* 🚀 **App Launcher Intents:** Native Android launches for WhatsApp (`whatsapp://`), Spotify (`spotify:`), Google Maps (`geo:`), and YouTube (`vnd.youtube:`).
 
-### Option B: 1-Scan Local Wi-Fi Pairing
+---
+
+### Option A: Install Native Android Companion (APK)
+1. Download the latest compiled APK from GitHub Actions or [`releases/jarvis-v2.0.0.apk`](releases/jarvis-v2.0.0.apk).
+2. Tap the APK file on your Android phone to install (allow *"Install unknown apps"* if prompted).
+3. Open the app on your phone.
+4. Tap the **Gateway Server** icon (`Server`) in the top HUD header:
+   * **Local Wi-Fi Mode:** Enter your PC's IP address (e.g. `http://192.168.1.50:3001`). Tap **"Test Ping"** to verify connection latency, then **"Save & Connect"**.
+   * **Anywhere / Cloudflare Tunnel Mode:** Enter your tunnel URL (e.g. `https://your-tunnel.trycloudflare.com`) to access JARVIS from anywhere over 5G/LTE.
+5. All voice streaming, native camera queries, and routines are now instantly linked to your JARVIS PC host!
+
+---
+
+### Option B: 1-Scan Local Wi-Fi Pairing (Browser)
 1. On your PC, click the **Mobile QR button** (`QrCode`) in the HUD header.
 2. A pairing modal generates a QR code encoded with your PC's LAN IP (e.g. `http://192.168.1.50:5173`).
 3. Scan the QR code with your phone's camera to immediately open and operate JARVIS from your phone over your local network.
+
+---
 
 ### Option C: 24/7 Mobile Access from Anywhere (Cloudflare Tunnel)
 To talk to JARVIS from your phone over 5G/cellular anywhere in the world:
@@ -191,7 +207,7 @@ To talk to JARVIS from your phone over 5G/cellular anywhere in the world:
    npx cloudflared tunnel --url http://localhost:3001
    ```
 2. Cloudflare will output an HTTPS URL (e.g., `https://random-subdomain.trycloudflare.com`).
-3. Open that URL on your phone browser. Microphone and voice streaming work with valid SSL without opening any ports on your home router.
+3. Open that URL on your phone browser or enter it into the **Gateway Link Config** inside the Android APK. Microphone, voice streaming, and WebRTC work with valid SSL without opening any ports on your home router.
 
 ---
 

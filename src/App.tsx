@@ -15,12 +15,14 @@ import { speechEngine } from './services/speechEngine';
 import { api } from './services/api';
 import { actionExecutor } from './services/actionExecutor';
 import { visionCapture } from './services/visionCapture';
+import { nativeAndroid } from './services/nativeAndroid';
 
 import { HUDHeader } from './components/HUDHeader';
 import { Sidebar } from './components/Sidebar';
 import { MicrophoneModal } from './components/MicrophoneModal';
 import { ActionApprovalModal } from './components/ActionApprovalModal';
 import { MobilePairingModal } from './components/MobilePairingModal';
+import { ServerConfigModal } from './components/ServerConfigModal';
 
 import { DashboardView } from './components/views/DashboardView';
 import { NeuralChatView } from './components/views/NeuralChatView';
@@ -53,6 +55,7 @@ export const App: React.FC = () => {
   const [micModalOpen, setMicModalOpen] = useState<boolean>(false);
   const [actionModalOpen, setActionModalOpen] = useState<boolean>(false);
   const [mobilePairingOpen, setMobilePairingOpen] = useState<boolean>(false);
+  const [serverConfigOpen, setServerConfigOpen] = useState<boolean>(false);
 
   // Real-time Telemetry Data
   const [telemetry, setTelemetry] = useState<TelemetryData>({
@@ -139,8 +142,11 @@ export const App: React.FC = () => {
     transitionAiState('IDLE', true);
   }, [transitionAiState]);
 
-  // Initial load: Telemetry WebSocket, Memories, Tasks, Action Queue
+  // Initial load: Telemetry WebSocket, Memories, Tasks, Action Queue, Native Android HUD
   useEffect(() => {
+    // Configure Native Android immersive edge-to-edge status bar
+    nativeAndroid.initStatusBar();
+
     const unsub = api.subscribeTelemetry((data) => {
       setTelemetry((prev) => ({ ...prev, ...data }));
     });
@@ -481,6 +487,7 @@ export const App: React.FC = () => {
           pendingActionsCount={pendingActions.length}
           onOpenActionQueue={() => setActionModalOpen(true)}
           onOpenMobilePairing={() => setMobilePairingOpen(true)}
+          onOpenServerConfig={() => setServerConfigOpen(true)}
           onMobileMenuToggle={() => setMobileNavOpen(true)}
         />
 
@@ -606,6 +613,15 @@ export const App: React.FC = () => {
       <MobilePairingModal
         isOpen={mobilePairingOpen}
         onClose={() => setMobilePairingOpen(false)}
+      />
+
+      <ServerConfigModal
+        isOpen={serverConfigOpen}
+        onClose={() => setServerConfigOpen(false)}
+        onServerUpdated={() => {
+          api.reconnect();
+          showToast('JARVIS Gateway Synced');
+        }}
       />
     </div>
   );
